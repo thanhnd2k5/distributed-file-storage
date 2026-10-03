@@ -1,6 +1,6 @@
 # Distributed File Storage — bộ đặc tả V1
 
-**02/10/2026 · Một người code · Chưa có implementation trong bộ này.**
+**Đặc tả 02/10/2026 · Một người code · Implementation M0–M1 hoàn thành 03/10/2026.**
 
 ## Đọc theo thứ tự
 
@@ -44,6 +44,16 @@ Có thể bắt đầu code theo M0/M1 ngay; không cần thêm vòng tài liệ
 
 ## Tiến độ implementation — 03/10/2026
 
+**M1 đã hoàn thành P1–P6.** Full backend suite 106 passed, không skipped/deselected;
+lint/format 29 files, schema drift check và base smoke HTTP/DB/registry/ba node qua.
+Metadata và cả ba node hiện dùng build mới, volumes giữ nguyên. Persistence/crash
+và volume isolation đã có bằng chứng P5; chưa có replication/failover. Tiếp theo
+là M2: health polling và REST nodes/cluster. Các ghi nhận bên dưới là lịch sử từng phase.
+
+Review sau P6 đã sửa hai bug Health worker starvation và accounting khi Store lại
+chunk mất trên disk. Focused Storage/lifecycle regression: 105 passed, 4 deselected;
+lint/format qua. Năm cases mới và fixtures dùng production server factory đã bổ sung.
+
 Base M0 đã được thiết lập trong repo: Python 3.12 venv/dependency lock, proto
 generation/import, config/logging, Metadata health API, migration bốn bảng và
 Storage HealthCheck. Compose local chạy PostgreSQL, Metadata và ba node với
@@ -51,14 +61,33 @@ volumes riêng; 7 checks qua trong Docker Linux, schema không drift và smoke q
 sau Metadata restart. Hướng dẫn thực tế: [README repo](../README.md).
 
 M1 P1 đã có validation đầu vào data RPC, layout chunk/tempfile và startup
-filesystem cleanup/used_bytes/limit checks. 58 tests qua trong Docker Linux;
-request sai trả INVALID_ARGUMENT, request hợp lệ vẫn UNIMPLEMENTED.
+filesystem cleanup/used_bytes/limit checks. M1 P2 đã có StoreChunk atomic,
+idempotency, conflict handling và metrics sau commit. Focused integration P2:
+70 passed, 4 deselected trong Docker Linux; lint/format qua.
 
-Store/Get/Delete xử lý dữ liệu và luồng file chưa được triển khai; health polling, cleanup
+M1 P3 đã có Get snapshot/hash actual bytes và Delete idempotent dưới cùng mutex
+với Store. Focused integration P3: 82 passed, 4 deselected trong Docker Linux,
+gồm 12 cases mới và hồi quy Storage; lint/format qua. Chỉ image tests được rebuild;
+không chạy DB tests, cluster smoke hay restart. P4–P6 chưa hoàn thành.
+
+M1 P4 đã có stats snapshot dưới lock riêng, Health không chờ operation mutex,
+probe short-write check và sanitize lỗi bất ngờ. Focused integration: 98 passed,
+4 deselected, gồm 16 cases P4 về health/concurrency/cancel/deadline/ack loss và
+hồi quy Storage; lint/format qua. Chỉ rebuild image tests, không restart runtime
+containers hay chạy DB/cluster smoke. P5–P6 và M1 chưa hoàn thành.
+
+M1 P5 đã xác minh 2 MiB qua restart container thật, node-2 NOT_FOUND với chunk
+node-1 và Delete lặp đưa metrics về baseline. Hai lifecycle scenarios qua process
+thật kiểm tra restart và SIGKILL sau fsync trước commit, startup dọn tempfile và
+giữ chunk cũ. Có smoke client theo mode và manifest; hướng dẫn trong README repo.
+Node-1/node-2 đã cập nhật build, Metadata/node-3 chưa recreate. Không rerun suite
+cũ/DB/Metadata smoke; P6 và M1 chưa hoàn thành.
+
+Luồng file REST chưa được triển khai; health polling, cleanup
 worker, repair và UI dự án vẫn thuộc các milestone tiếp theo. Không coi việc
 container healthy là bằng chứng replication hoặc failover đã hoạt động.
 
-Kế hoạch bước tiếp theo: [M1 — Một Storage Node thật, phase P1–P6](M1_IMPLEMENTATION_PLAN.md).
+Bằng chứng và bàn giao M2: [M1 — Một Storage Node thật, phase P1–P6](M1_IMPLEMENTATION_PLAN.md).
 
 Mã nguồn Python, contract implementation, tests/scripts và dependency lock đã
 gom vào `backend/`, song song với `frontend/`. `docs/` và `deploy/` dùng chung

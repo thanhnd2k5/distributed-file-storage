@@ -1,7 +1,8 @@
 # M1 — Một Storage Node lưu dữ liệu thật
 
 **Ngày lập:** 03/10/2026  
-**Trạng thái:** P1 hoàn thành; P2–P6 chưa triển khai  
+**Trạng thái:** M1 hoàn thành — P1–P6 đã qua gate (03/10/2026)
+
 **Đầu vào:** base M0 đã chạy và được kiểm tra bằng Docker Linux  
 **Đầu ra:** Store → Get → restart → Get → Delete hai lần hoạt động qua gRPC.
 
@@ -237,29 +238,33 @@ Push-Location backend
 Pop-Location
 docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools build
 docker compose --env-file deploy/.env -f deploy/compose.local.yml up -d --wait
-docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm tests
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests
+docker compose --env-file deploy/.env -f deploy/compose.local.yml exec -T metadata alembic check
 docker compose --env-file deploy/.env -f deploy/compose.local.yml exec metadata python scripts/smoke_base.py
 ```
 
-Lệnh cụ thể cho smoke Storage/restart được chốt và ghi vào README khi script
-P5 tồn tại. Không ghi kết quả pass hoặc đánh dấu milestone trước khi chạy thật.
+Lệnh cụ thể cho smoke Storage/restart đã có trong README và bằng chứng P5.
+Không ghi kết quả pass hoặc đánh dấu milestone trước khi chạy thật.
 Nếu sửa code sau một failure, chạy lại check liên quan rồi bộ tích hợp cần thiết.
 
 ## 10. Definition of Done và tiến độ
 
 - [x] **P1:** validation, layout và startup cleanup hoạt động (03/10/2026).
-- [ ] **P2:** Store atomic, checksum, idempotency và conflict đúng.
-- [ ] **P3:** Get snapshot/hash actual bytes, Delete idempotent đúng.
-- [ ] **P4:** error mapping, metrics, cancel và concurrency checks qua.
-- [ ] **P5:** 2 MiB RPC roundtrip → restart thật → đọc lại → Delete hai lần qua.
-- [ ] **P5:** volume node-1/node-2 độc lập; tempfile sau process crash được dọn.
-- [ ] **P6:** checks M0 còn qua; lint/format qua; setup/smoke guide ghi bằng chứng.
-- [ ] **M1 hoàn thành:** mọi gate trên đạt, không còn data RPC UNIMPLEMENTED.
+- [x] **P2:** Store atomic, checksum, idempotency và conflict đúng (03/10/2026).
+- [x] **P3:** Get snapshot/hash actual bytes, Delete idempotent đúng (03/10/2026).
+- [x] **P4:** error mapping, metrics, cancel và concurrency checks qua (03/10/2026).
+- [x] **P5:** 2 MiB RPC roundtrip → restart thật → đọc lại → Delete hai lần qua (03/10/2026).
+- [x] **P5:** volume node-1/node-2 độc lập; tempfile sau process crash được dọn (03/10/2026).
+- [x] **P6:** checks M0 còn qua; lint/format qua; setup/smoke guide ghi bằng chứng (03/10/2026).
+- [x] **M1 hoàn thành:** mọi gate trên đạt, không còn data RPC UNIMPLEMENTED (03/10/2026).
 
 Khi bàn giao M2, Storage có bốn RPC chạy thật, stable node identity/data path,
 message limits thống nhất và failure semantics đủ cho Metadata coordinator.
 M2 tiếp tục health polling/trạng thái node trên base DB/Compose đã có; không cần
 viết lại kế hoạch kiến trúc trước mỗi RPC.
+
+Các ghi nhận P1–P5 dưới đây là kết quả tại thời điểm kết thúc từng phase.
+Trạng thái hiện tại được chốt ở bằng chứng P6.
 
 ### Bằng chứng P1 — 03/10/2026
 
@@ -276,3 +281,185 @@ hay tên lạ. Một process sở hữu mỗi DATA_DIR; process trước phải 
 qua. Các cases P1 kiểm tra biên 1 byte/2 MiB/limit+1, hash/UUID sai qua RPC,
 không có filesystem artifacts sau reject, temp cleanup, accounting startup,
 giảm chunk limit và filesystem không dùng được. M1 chưa hoàn thành.
+
+### Bằng chứng P2 — 03/10/2026
+
+StoreChunk đã lưu immutable chunk thật: validate SHA-256, dùng operation mutex,
+exclusive tempfile trong DATA_DIR, write → flush → fsync → context check → atomic
+replace → cập nhật used_bytes → ack. Retry đọc actual bytes; cùng payload trả
+already_existed=true, khác payload trả ALREADY_EXISTS và giữ bytes cũ.
+
+18 cases P2 kiểm tra ack/payload 2 MiB, retry/accounting, conflict/corruption,
+open/write/flush/fsync/replace failures, capacity/writable error mapping, hai
+Store cạnh tranh, cancel trước commit, commit trước mất response và tempfile
+collision. Các checks cancel/ack loss là kiểm tra ranh giới Store; P4/P5 vẫn cần
+kiểm tra phối hợp Get/Delete, timeout và restart process thật khi triển khai.
+
+Focused integration đã chạy từ repo root:
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools build tests
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests python -m pytest -q tests/test_storage_p2.py tests/test_storage_p1.py tests/test_base.py -k "storage or grpc_health"
+```
+
+Kết quả: **70 passed, 4 deselected**, một warning Starlette/httpx đã biết;
+lint/format các file liên quan qua. Không chạy PostgreSQL bootstrap, full suite,
+cluster smoke hoặc restart services ở P2. Chỉ image test được rebuild; runtime
+containers đang chạy chưa được cập nhật trong lượt này. Get/Delete vẫn
+UNIMPLEMENTED với input hợp lệ; M1 chưa hoàn thành.
+
+### Bằng chứng P3 — 03/10/2026
+
+GetChunk đọc committed snapshot dưới operation mutex, giới hạn bytes đọc trong
+chunk limit, kiểm tra size/short read và tính SHA-256 từ actual bytes sau khi
+nhả lock. Missing chunk trả NOT_FOUND; local unreadable/invalid size/short read
+trả DATA_LOSS. Bytes bị sửa nhưng vẫn hợp lệ được trả cùng hash mới, để Metadata
+so sánh expected hash ở M3.
+
+DeleteChunk dùng cùng mutex với Store/Get; unlink thành công mới trả existed=true
+và giảm used_bytes theo size đã được tính lúc startup/Store. Chunk absent trả
+existed=false. Lỗi I/O giữ file/accounting và trả status lỗi, không lộ chi tiết
+filesystem qua RPC.
+
+12 cases P3 kiểm tra 1 byte/2 MiB roundtrip, Delete hai lần, missing Get/tempfile,
+actual hash sau sửa disk, size corruption, short read, lỗi đọc/xóa, accounting
+startup và snapshot vẫn hợp lệ sau Delete.
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools build tests
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests python -m pytest -q tests/test_storage_p3.py tests/test_storage_p2.py tests/test_storage_p1.py tests/test_base.py -k "storage or grpc_health"
+```
+
+Kết quả: **82 passed, 4 deselected**, một warning Starlette/httpx đã biết;
+lint/format các file liên quan qua. Không chạy PostgreSQL bootstrap, full suite,
+cluster smoke hoặc restart services ở P3. Chỉ image tests được rebuild, runtime
+containers chưa cập nhật trong lượt này. Concurrency/cancel/health tổng hợp ở
+P4 và persistence qua restart process thật ở P5 còn chưa được xác minh; M1 chưa
+hoàn thành.
+
+### Bằng chứng P4 — 03/10/2026
+
+used_bytes có stats lock riêng: cập nhật sau Store/Delete thành công và đọc
+snapshot qua critical section ngắn. Health không lấy operation mutex hay walk
+directory; tempfile chưa commit không được tính. Probe kiểm tra short write,
+flush/fsync và dọn file. Lỗi bất ngờ ở probe/capacity trả INTERNAL đã sanitize;
+lỗi filesystem capacity trả FAILED_PRECONDITION.
+
+16 cases P4 qua gRPC thật kiểm tra Health khi operation mutex bị giữ, không scan
+directory, cancel/deadline khi Store đợi lock và sau fsync trước commit, Get/Delete
+cạnh tranh với Store chưa commit, health giữa transfer, mất ack → retry → Delete,
+probe open/short write/flush/fsync errors, capacity failure và lỗi bất ngờ ở ba
+data operations. Đồng bộ bằng Events và deadline hữu hạn; không dùng sleep để
+đoán thứ tự thread. Get cạnh tranh với Delete được phép trả full snapshot hoặc
+NOT_FOUND theo thứ tự lock, không trả bytes ghi dở.
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools build tests
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests python -m pytest -q tests/test_storage_p4.py tests/test_storage_p3.py tests/test_storage_p2.py tests/test_storage_p1.py tests/test_base.py -k "storage or grpc_health"
+```
+
+Kết quả: **98 passed, 4 deselected**, gồm 16 cases P4 và hồi quy Storage P1–P3;
+một warning Starlette/httpx đã biết. Ruff check/format các file sửa qua. Không
+chạy PostgreSQL bootstrap, full suite, cluster smoke hay restart services. Chỉ
+rebuild image tests; runtime containers chưa cập nhật trong lượt này. P5 còn
+phải chứng minh persistence/cleanup qua restart và crash process thật; P6 và M1
+chưa hoàn thành.
+
+### Bằng chứng P5 — 03/10/2026
+
+`backend/scripts/smoke_storage.py` có các mode store/verify/absent/delete, fixture
+bytes xác định, UUID riêng và manifest lưu trước RPC đầu tiên. Manifest giữ target,
+node identity/domain, size/hash và used_bytes baseline. Client dùng message limits
+chung, tắt retries và đặt deadline. Không ghi đè manifest cũ; mỗi lượt dùng path mới.
+
+Focused Linux lifecycle command:
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools build tests storage-node-1 storage-node-2
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests python -m pytest -q tests/test_storage_p5.py
+```
+
+Test restart process đã pass ngay lần đầu. Case crash thất bại ở điểm đồng bộ
+harness; đã thay SIGSTOP bằng Event chặn Store worker sau fsync. Sau rebuild
+image tests, chỉ rerun case đó và pass:
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests python -m pytest -q tests/test_storage_p5.py::test_sigkill_after_fsync_before_replace_cleans_temp_and_preserves_committed
+```
+
+Hai lifecycle scenarios đã được xác minh: process restart khôi phục chunk 2 MiB
+và metrics; SIGKILL process thật sau fsync trước replace giữ committed chunk cũ,
+không public ID ghi dở và startup dọn tempfile trước khi nhận RPC. Fault injection
+chỉ có trong child test harness, không thêm endpoint/env vào production server.
+
+Smoke Compose theo [hướng dẫn repo](../README.md#smoke-storage-m1-qua-restart-thật)
+đã pass Store/retry/Get → restart storage-node-1 → Get → node-2 NOT_FOUND →
+Delete hai lần → Get NOT_FOUND. Fixture ID `e12a34d4-5295-4d6f-93dc-e208b8e91151`,
+size 2097152, SHA-256 `91d3beb88a9b2f778a6c44a1c53b63d3c79931845a9aef84b3fb414610bd1938`.
+used_bytes node-1: 0 → 2097152 → 2097152 sau restart → 0 sau cleanup. Chỉ fixture
+được xóa. Hai node healthy, dùng volumes `distributed-file-storage_node-1-data`
+và `distributed-file-storage_node-2-data`, cùng mount `/data/chunks` nhưng volume riêng.
+
+Ruff check/format hai file mới qua. Không rerun P1–P4, PostgreSQL bootstrap,
+full suite hay Metadata smoke. Node-1/node-2 đã cập nhật image hiện tại; Metadata
+và node-3 chưa được recreate trong P5. P6 và M1 chưa hoàn thành; không coi smoke
+một node là bằng chứng replication/failover hay bảo đảm trước mọi dạng mất điện.
+
+### Bằng chứng P6 và bàn giao M2 — 03/10/2026
+
+Full validation được chọn vì đây là gate bàn giao M1. Docker/PostgreSQL và các
+service healthy ở preflight. Build toàn bộ backend và cập nhật Metadata/cả ba
+Storage node bằng Compose, giữ nguyên named volumes. Các lệnh mục 9 đã chạy:
+
+- Ruff check qua; Ruff format --check: 29 files đã đúng format.
+- Full backend suite trong Docker Linux: **106 passed**, không skipped/deselected,
+  bao gồm PostgreSQL bootstrap trong schemas riêng, M0 và Storage P1–P5.
+- `alembic check`: No new upgrade operations detected.
+- Base smoke: HTTP live/ready, bốn bảng, registry và ba node identity/domain/writable qua.
+- Rà implementation Storage/tests/scripts: không còn UNIMPLEMENTED/TODO/NotImplemented.
+
+Một warning Starlette/httpx đã biết; không ảnh hưởng kết quả. Không chạy frontend,
+replication/failover hay demo hai máy vì ngoài M1. Không lặp riêng smoke restart
+P5: Storage code không đổi, bằng chứng process restart/crash và named volume đã
+được ghi ở P5; hai lifecycle scenarios cũng qua trong full suite P6. Cluster hiện
+dùng build mới ở Metadata và cả ba Storage node. M1 hoàn thành.
+
+Bàn giao M2 giữ nguyên bốn unary RPC, canonical UUID, chunk limit 2 MiB và message
+limit 8 MiB. Store immutable/idempotent, Get trả actual bytes/hash, Delete idempotent,
+Health đọc cached used_bytes và filesystem snapshot. Một process sở hữu DATA_DIR;
+Health writable không chứng minh integrity của từng replica. Metadata phải so sánh
+hash/size và xử lý outcome chưa biết khi RPC timeout trong các milestone tiếp theo.
+
+M2 nối health polling vào lifecycle Metadata, dùng interval 3 giây/deadline 1 giây,
+monotonic age và state ACTIVE/SUSPECTED/DOWN theo ARCHITECTURE. Xử lý identity sai,
+unwritable và disabled nodes; lưu snapshot cho GET /nodes và GET /cluster theo API
+contract. Gate M2 cần chứng minh phát hiện node down/recovery và DB giữ qua restart.
+Không triển khai upload/RF/download/cleanup/repair trong P6; các luồng đó thuộc M3–M4.
+
+### Sửa sau review M1 — 03/10/2026
+
+Review phát hiện hai bug bằng isolated reproducers, dù suite P6 đã qua:
+
+- Health dùng chung bốn worker với transfer, có thể timeout khi tất cả worker đợi
+  operation mutex. Server hiện route Health sang executor riêng trên cùng endpoint
+  và wire contract; quản lý shutdown cả hai executor sau khi handlers kết thúc.
+- Chunk biến mất trên disk rồi Store lại cùng ID làm used_bytes cộng hai lần.
+  Sau commit, counter hiện tăng theo `new_size - previous_accounted_size`, nên
+  retry/Delete đưa metrics về đúng baseline, kể cả size khôi phục khác size cũ.
+
+Fixtures P1–P4 và base health đã gom vào `tests/conftest.py`, dùng `create_server`
+thật thay vì tự dựng cấu hình gRPC. `test_storage_regressions.py` có năm cases:
+Health khi cả bốn transfer workers bị chặn, restore cùng/khác size, từ chunk
+startup hoặc Store trong process, retry/Delete và bảo toàn accounting chunk khác.
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools build tests storage-node-1
+docker compose --env-file deploy/.env -f deploy/compose.local.yml --profile tools run --rm --no-deps tests python -m pytest -q tests/test_storage_regressions.py tests/test_storage_p1.py tests/test_storage_p2.py tests/test_storage_p3.py tests/test_storage_p4.py tests/test_storage_p5.py tests/test_base.py -k "storage or grpc_health"
+```
+
+Kết quả: **105 passed, 4 deselected**, không skipped; một warning Starlette/httpx
+đã biết. Ruff check/format 11 files qua. Có kiểm tra lifecycle restart/SIGKILL với
+server mới. Không rerun DB/full suite/frontend: các phần này không thay đổi. Ba
+Storage nodes được cập nhật bằng `up -d --no-deps --wait`, giữ named volumes;
+Metadata/PostgreSQL không restart. Health executor hook của grpcio đang pin được
+regression test qua production factory, để phát hiện thay đổi khi nâng dependency.

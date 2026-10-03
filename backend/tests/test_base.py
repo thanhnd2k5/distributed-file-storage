@@ -1,18 +1,14 @@
 import hashlib
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 
 import grpc
 import pytest
 import storage_pb2
-import storage_pb2_grpc
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from metadata.config import MetadataSettings
 from metadata.main import create_app
-from storage.config import StorageSettings
-from storage.service import StorageService
 
 
 def metadata_settings(**overrides):
@@ -57,33 +53,16 @@ def test_proto_two_mib_roundtrip_and_unary_contract():
     assert all(not m.client_streaming and not m.server_streaming for m in methods)
 
 
-def test_grpc_health_identity_and_unimplemented_data_rpc(tmp_path):
-    settings = StorageSettings(
-        _env_file=None,
-        node_id="test-node",
-        failure_domain="test-host",
-        data_dir=tmp_path,
-        grpc_bind_host="127.0.0.1",
-        grpc_port=50061,
-    )
-    server = grpc.server(ThreadPoolExecutor(max_workers=4), options=settings.grpc_options())
-    storage_pb2_grpc.add_StorageServiceServicer_to_server(StorageService(settings), server)
-    port = server.add_insecure_port("127.0.0.1:0")
-    server.start()
-    try:
-        with grpc.insecure_channel(f"127.0.0.1:{port}", options=settings.grpc_options()) as channel:
-            grpc.channel_ready_future(channel).result(timeout=5)
-            stub = storage_pb2_grpc.StorageServiceStub(channel)
-            response = stub.HealthCheck(storage_pb2.HealthCheckRequest(), timeout=2)
-            assert response.node_id == "test-node"
-            assert response.failure_domain == "test-host"
-            assert response.storage_writable and response.capacity_bytes > 0
-            assert list(tmp_path.iterdir()) == []
-            with pytest.raises(grpc.RpcError) as error:
-                stub.GetChunk(storage_pb2.GetChunkRequest(chunk_id=str(uuid.uuid4())), timeout=2)
-            assert error.value.code() == grpc.StatusCode.UNIMPLEMENTED
-    finally:
-        server.stop(0).wait()
+def test_grpc_health_identity_and_missing_chunk(storage_node_factory):
+    stub, _, directory = storage_node_factory("test-node", "test-host")
+    response = stub.HealthCheck(storage_pb2.HealthCheckRequest(), timeout=2)
+    assert response.node_id == "test-node"
+    assert response.failure_domain == "test-host"
+    assert response.storage_writable and response.capacity_bytes > 0
+    assert list(directory.iterdir()) == []
+    with pytest.raises(grpc.RpcError) as error:
+        stub.GetChunk(storage_pb2.GetChunkRequest(chunk_id=str(uuid.uuid4())), timeout=2)
+    assert error.value.code() == grpc.StatusCode.NOT_FOUND
 
 
 def test_metadata_db_down_still_live_but_not_ready():
