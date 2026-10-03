@@ -68,7 +68,7 @@ Không chạy nhiều Uvicorn worker hoặc nhiều Metadata instance: lock tron
 
 MiB = 1,048,576 bytes. File rỗng được hỗ trợ, có 0 chunk và checksum của chuỗi bytes rỗng. Không tạo chunk rỗng cuối file. Chunk cuối có thể nhỏ hơn chunk size.
 
-Các limit được validate khi khởi động. Chunk size thay đổi chỉ áp dụng cho file mới; file cũ giữ chunk size và mapping cũ. RF được snapshot vào từng file; repair dùng RF của file đó. HTTP/proxy timeout cho upload/download tối thiểu 300 giây ở cấu hình demo; RPC timeout vẫn hữu hạn. Không gọi các giá trị này là SLA.
+Các limit được validate khi khởi động. Mọi interval/deadline/time budget phải hữu hạn và dương; không nhận inf/nan. Chunk size thay đổi chỉ áp dụng cho file mới; file cũ giữ chunk size và mapping cũ. RF được snapshot vào từng file; repair dùng RF của file đó. HTTP/proxy timeout cho upload/download tối thiểu 300 giây ở cấu hình demo; RPC timeout vẫn hữu hạn. Không gọi các giá trị này là SLA.
 
 Node registry đọc từ biến `STORAGE_NODES_JSON` của Metadata:
 
@@ -172,6 +172,11 @@ Disk tạm của Metadata cần đủ cho multipart spool và tempfile. RAM vẫ
 Metadata gọi HealthCheck mỗi 3 giây/node, deadline 1 giây. Lượt health thất bại đầu: SUSPECTED; quá 10 giây kể từ lần thành công cuối: DOWN. Node chưa từng có health thành công là DOWN. Một health đúng identity và writable=true chuyển ACTIVE; writable=false chuyển DOWN kèm lý do. Node writable=false vẫn có thể được thử Get fallback nhưng không được placement chọn.
 
 Theo dõi tuổi health bằng monotonic clock trong process; lưu last_success_at UTC để hiển thị. Không dùng đồng hồ do node gửi để quyết định timeout. Node DOWN có thể là network partition; detector không chứng minh máy vật lý đã chết.
+
+Readiness yêu cầu health scheduler còn chạy, cùng DB ping và startup recovery.
+Scheduler lỗi/dừng thì ready trả 503; live và GET nodes/cluster vẫn cho quan sát
+snapshot nếu DB dùng được. Health RPC thất bại của một node không làm scheduler
+dừng hoặc khiến Metadata mất readiness.
 
 ### Manual repair
 

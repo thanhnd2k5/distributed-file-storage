@@ -33,7 +33,58 @@ trong `frontend/`; frontend chạy bằng Vite trên máy dev.
 
 **M1 đã hoàn thành (03/10/2026).** Full backend suite: 106 passed, không skipped;
 lint/format, schema drift check và smoke cluster qua. Metadata và cả ba Storage
-node đang dùng build hiện tại. Tiếp theo là M2: health polling và API nodes/cluster.
+node dùng build M1 tại thời điểm gate.
+
+**M2 đã hoàn thành P1–P6 (03/10/2026).** Metadata đã chạy health polling và
+GET nodes/cluster trên build M2. Các gate registry/detector/worker/API có focused
+tests và lint/format; P5 đã quan sát down/recovery, restart Metadata/PostgreSQL
+giữ metadata và volumes. P6 rà source/contracts/evidence và chốt bàn giao M3,
+không sửa runtime hoặc chạy lại tests. Counts P1–P5 có regression trùng nhau,
+không coi là một full-suite run. Tiếp theo **M3: upload/download RF=2**.
+Chi tiết: [DoD, evidence và bàn giao M3](docs/M2_IMPLEMENTATION_PLAN.md).
+
+Review bổ sung M2 đã sửa guard schema/validation của smoke khi chạy Python `-O`,
+thời gian inf/nan và readiness khi scheduler dừng, smoke có disabled history.
+Regression: 54 targeted checks native + 53 focused integration Docker Linux
+passed; lint/format 8 files qua. Metadata đã cập nhật bản sửa, baseline `-O`
+read-only qua và ba node ACTIVE; không rerun full suite hoặc kịch bản DB/node restart.
+
+Các ghi nhận P1–P5 dưới đây là lịch sử tại thời điểm từng phase.
+
+**M2 P1 đã hoàn thành (03/10/2026).** Registry/startup reset DOWN, giữ mapping
+và lịch sử health cùng endpoint, xóa snapshot khi endpoint/domain đổi; recovery
+chạy dưới operation_lock. Focused PostgreSQL/lifespan checks: 16 passed, không
+skipped/deselected; lint/format 3 files qua. Chỉ image tests được rebuild, chưa
+deploy/restart services. Tiếp theo P2 health state machine; M2 chưa hoàn thành.
+Chi tiết: [kế hoạch và evidence M2](docs/M2_IMPLEMENTATION_PLAN.md).
+
+**M2 P2 đã hoàn thành (03/10/2026).** Health state machine xử lý
+ACTIVE/SUSPECTED/DOWN bằng monotonic clock, identity/domain, unwritable và
+recovery. 32 targeted tests native Windows passed, không skipped/deselected;
+lint/format 2 files qua. Một warning pytest cache bị sandbox chặn ghi.
+Chưa nối RPC/persistence hoặc deploy/restart dịch vụ; tiếp theo P3 worker/lifespan.
+
+**M2 P3 đã hoàn thành (03/10/2026).** Health worker chạy theo lifespan, poll
+độc lập từng node, dùng Session/transaction riêng trước và sau RPC, publish
+snapshot sau commit và dừng threads/channels trước dispose DB engine.
+Focused integration/regression: 32 passed trong Docker Linux với gRPC thật và
+PostgreSQL schema riêng; lint/format 5 files qua. Chỉ rebuild tests image, chưa
+deploy/restart services. Tiếp theo P4 API nodes/cluster; M2 chưa hoàn thành.
+
+**M2 P4 đã hoàn thành (03/10/2026).** GET `/api/v1/nodes` và `/api/v1/cluster`
+đọc snapshot DB, trả đúng contract null/UTC và counters theo RF từng file.
+Cluster dùng một SQL statement; GET vẫn đọc được khi operation_lock busy và
+không gọi RPC. HTTP/PostgreSQL checks: 32 passed trong Docker Linux, không
+skipped/deselected; lint/format 6 files qua. Chỉ rebuild tests image, chưa deploy
+API mới vào Metadata đang chạy. Tiếp theo P5 lifecycle/Compose smoke; M2 chưa xong.
+
+**M2 P5 đã hoàn thành (03/10/2026).** Metadata đã deploy build M2. Lifecycle
+test với hai process thật và schema PostgreSQL riêng: 1 passed; Compose smoke
+quan sát node-2 ACTIVE → SUSPECTED → DOWN → ACTIVE, hai node khác vẫn ACTIVE,
+live/ready vẫn 200. Restart Metadata/PostgreSQL giữ metadata fixture và named
+volumes; ba Storage volumes khác nhau, fixture đã dọn, tất cả services healthy.
+Lint/format 3 Python files và PowerShell syntax qua. Còn P6 rà DoD/bàn giao M3;
+M2 chưa đánh dấu hoàn thành. Chi tiết trong evidence P5 của phase plan.
 
 Sau review M1, đã sửa Health bị starvation khi bốn transfer worker đợi lock
 (executor riêng cho Health) và used_bytes cộng dư khi Store lại chunk mất trên
@@ -58,10 +109,12 @@ xóa idempotent: existed=true rồi false; chỉ giảm cached used_bytes sau un
 thành công. Lỗi xóa không ack success hay thay đổi accounting.
 
 Các data RPC trả INVALID_ARGUMENT khi input sai. Chưa có upload,
-download, delete qua REST, health polling hay cleanup worker/repair. Startup recovery chỉ
+download, delete qua REST hay cleanup worker/repair. Health polling đã qua
+integration P3; nodes/cluster APIs đã qua P4 và đang chạy trên Metadata build M2
+sau Compose smoke P5. Startup recovery chỉ
 đánh dấu upload gián đoạn FAILED và giữ cleanup_pending trong DB; worker xử lý
-chúng thuộc các milestone sau. Node registry khởi tạo DOWN đến khi health polling
-được triển khai. M2 chưa hoàn thành.
+chúng thuộc các milestone sau. Node registry khởi tạo DOWN đến health success
+hợp lệ đầu tiên của process hiện tại. M2 đã hoàn thành; luồng file thuộc M3.
 
 M1 P4 đã tách stats lock ngắn cho used_bytes: Health đọc cached snapshot mà
 không chờ mutex chunk hay scan directory. Probe phát hiện short write; lỗi
@@ -92,9 +145,13 @@ PostgreSQL không publish port ra host/LAN; Metadata/gRPC local bind 127.0.0.1.
 - OpenAPI: http://localhost:8000/docs
 - Live: http://localhost:8000/api/v1/health/live
 - Ready: http://localhost:8000/api/v1/health/ready
+- Nodes: http://localhost:8000/api/v1/nodes
+- Cluster: http://localhost:8000/api/v1/cluster
 - gRPC node-1/2/3: localhost:50051/50052/50053.
 
-`ready` kiểm tra DB và startup initialization; không yêu cầu mọi node ACTIVE.
+`ready` kiểm tra DB, startup initialization và health scheduler đang chạy;
+không yêu cầu mọi node ACTIVE. Scheduler lỗi/dừng trả ready 503; live và GET
+nodes/cluster vẫn cho xem snapshot nếu DB dùng được.
 `live` vẫn hoạt động nếu DB mất kết nối sau startup. Cấu hình sai fail ngay khi
 khởi động; lỗi DB/schema lúc initialize giữ readiness 503, cần restart sau khi sửa.
 
@@ -106,6 +163,15 @@ docker compose --env-file deploy/.env -f deploy/compose.local.yml start --wait
 
 Stop/start giữ nguyên bốn named volumes. Compose local dùng cùng `dev_host`;
 demo hai máy và các file Compose A/B sẽ làm ở M6.
+
+Smoke M2 mặc định chỉ đọc REST. Kịch bản PowerShell bên dưới dành cho local dev:
+stop/start node-2, restart Metadata/PostgreSQL, giữ volumes và chỉ dọn schema
+fixture riêng do lượt chạy tạo.
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml exec -T metadata python scripts/smoke_metadata.py
+powershell -ExecutionPolicy Bypass -File backend/scripts/smoke_metadata.ps1
+```
 
 ## Môi trường Python để code
 
