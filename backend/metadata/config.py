@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, FiniteFloat, field_validator, model_validator
 from sqlalchemy.engine import make_url
 
 from common.config import TransferSettings
@@ -19,14 +19,14 @@ class MetadataSettings(TransferSettings):
     storage_nodes_json: list[NodeConfig]
     replication_factor: int = Field(default=2, ge=1)
     max_file_size_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
-    health_interval_seconds: float = Field(default=3, gt=0)
-    health_rpc_timeout_seconds: float = Field(default=1, gt=0)
-    node_down_after_seconds: float = Field(default=10, gt=0)
-    chunk_rpc_timeout_seconds: float = Field(default=5, gt=0)
+    health_interval_seconds: FiniteFloat = Field(default=3, gt=0)
+    health_rpc_timeout_seconds: FiniteFloat = Field(default=1, gt=0)
+    node_down_after_seconds: FiniteFloat = Field(default=10, gt=0)
+    chunk_rpc_timeout_seconds: FiniteFloat = Field(default=5, gt=0)
     rpc_max_attempts: int = Field(default=2, ge=1, le=2)
-    cleanup_interval_seconds: float = Field(default=5, gt=0)
+    cleanup_interval_seconds: FiniteFloat = Field(default=5, gt=0)
     repair_max_chunks: int = Field(default=8, ge=1, le=8)
-    repair_time_budget_seconds: float = Field(default=30, gt=0)
+    repair_time_budget_seconds: FiniteFloat = Field(default=30, gt=0)
     download_temp_dir: Path = Path(".runtime/downloads")
     cors_origins: list[str] = ["http://localhost:5173"]
 

@@ -46,8 +46,35 @@ M0 và M1 đã hoàn thành ngày 03/10/2026. Bằng chứng M1:
 [Storage Node, phase P1–P6](M1_IMPLEMENTATION_PLAN.md): 106 backend tests qua,
 lint/format, schema check và cluster smoke qua; persistence/restart/crash và
 volume độc lập đã được kiểm tra thật. Chưa coi replication/failover hay REST file
-flows là hoàn thành. Milestone tiếp theo là M2: health polling, node snapshots,
-API nodes/cluster và kiểm tra down/recovery/DB restart.
+flows là hoàn thành. M2 health polling, node snapshots, API nodes/cluster và
+down/recovery/DB restart cũng đã hoàn thành P1–P6 ngày 03/10/2026.
+
+Kế hoạch chi tiết M2: [Metadata quan sát ba Storage Node, phase P1–P6](M2_IMPLEMENTATION_PLAN.md).
+P1 registry/baseline → P2 health state machine → P3 worker/lifespan → P4 REST
+nodes/cluster → P5 down/recovery/restart thật → P6 bàn giao M3. M2 P1 đã qua gate ngày 03/10/2026:
+focused PostgreSQL/lifespan checks 16 passed, lint/format qua. M2 P2 state machine
+đã qua 32 targeted tests native, lint/format qua. M2 P3 worker/lifespan đã qua
+32 focused gRPC/PostgreSQL/bootstrap tests, lint/format qua. M2 P4 REST nodes/cluster
+đã qua 32 HTTP/PostgreSQL checks, lint/format qua. M2 P5 đã qua 1 lifecycle test
+với Metadata child processes thật và schema PostgreSQL riêng; Compose smoke đã
+quan sát node down/recovery, restart Metadata/PostgreSQL giữ fixture và volumes,
+ba Storage volumes độc lập. Metadata đã deploy M2, tất cả services healthy,
+fixture schema đã dọn; lint/format và PowerShell syntax qua. Không rerun toàn bộ
+suite M1/P1–P4 hoặc frontend. P6 đã rà source/contracts/evidence và hoàn tất
+bàn giao M3; không sửa runtime hay rerun checks. M2 đã hoàn thành, các counts
+từng phase có regression trùng nhau nên không là một full-suite run.
+
+Review bổ sung M2 đã sửa smoke guards dưới `-O`, finite timing/scheduler readiness
+và xử lý disabled history. 54 targeted checks native + 53 focused integration
+Docker passed; lint/format 8 files và baseline REST read-only `-O` qua sau deploy
+Metadata. Không rerun full suite hoặc DB/node lifecycle smoke P5.
+
+**Milestone tiếp theo: M3 upload/download RF=2.** Bắt đầu validation/chunking
+và placement enabled ACTIVE theo failure domain; lưu attempted PENDING trước
+Store, chỉ AVAILABLE khi đủ RF mỗi chunk, giữ mapping/cleanup flags khi lỗi.
+Download phải assemble tempfile, xác minh checksum và thử fallback trước HTTP
+200. Gate M3: file nhiều chunk có hai replicas/chunk, download SHA đúng, tắt
+một node vẫn đọc được. Chi tiết bất biến ở phần bàn giao cuối phase plan M2.
 
 ## 3. Kiểm tra có ý nghĩa
 

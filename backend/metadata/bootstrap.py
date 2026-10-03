@@ -20,6 +20,16 @@ def initialize_metadata(session_factory, settings) -> None:
                 )
                 if has_replica:
                     raise ValueError(f"Cannot change failure_domain for node {config.node_id}")
+            if (node.host, node.port, node.failure_domain) != (
+                config.host,
+                config.port,
+                config.failure_domain,
+            ):
+                # A snapshot belongs to its endpoint/domain, not just the stable ID.
+                node.last_success_at = None
+                node.capacity_bytes = None
+                node.available_bytes = None
+                node.used_bytes = None
             node.host = config.host
             node.port = config.port
             node.failure_domain = config.failure_domain

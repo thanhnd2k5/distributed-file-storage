@@ -62,7 +62,7 @@ Không dùng 200 kèm error JSON cho request thất bại. Repair trả 200 summ
 | GET | `/cluster` | Summary cluster và cấu hình demo | 200 ClusterSummary |
 | POST | `/admin/repair` | Một lượt repair có giới hạn | 200 RepairResult |
 | GET | `/health/live` | Metadata process đang phản hồi | 200 |
-| GET | `/health/ready` | DB/config/khởi tạo xong | 200 hoặc 503 |
+| GET | `/health/ready` | DB/config/khởi tạo xong, health scheduler đang chạy | 200 hoặc 503 |
 
 Paths trong bảng nối sau `/api/v1`. Không tạo REST endpoints trên Storage Nodes. Không cần node registration API; registry lấy từ config.
 
@@ -230,7 +230,7 @@ Capacity/free là filesystem snapshot; used_bytes là committed bytes trong DATA
 
 Node state counts active/suspected/down chỉ tính enabled; disabled tính riêng. Chunk counters cluster chỉ tính files AVAILABLE; cleanup counter tính mọi file chưa dọn hết. operation_busy là snapshot của lock.
 
-`GET /health/live` → `{"status":"LIVE"}`. `/health/ready` → `{"status":"READY"}` khi DB ping thành công và startup recovery hoàn tất; DB/config chưa ready trả 503 METADATA_UNAVAILABLE. Ready không yêu cầu tất cả node ACTIVE: data plane degraded vẫn cần API để xem và điều khiển.
+`GET /health/live` → `{"status":"LIVE"}`. `/health/ready` → `{"status":"READY"}` khi DB ping thành công, startup recovery hoàn tất và health scheduler đang chạy. DB/config chưa ready hoặc scheduler đã dừng/lỗi trả 503 METADATA_UNAVAILABLE. Ready không yêu cầu tất cả node ACTIVE: data plane degraded vẫn cần API để xem và điều khiển. GET nodes/cluster vẫn cho đọc snapshot sau startup khi scheduler lỗi, miễn DB còn dùng được.
 
 ### 2.7 Repair
 
