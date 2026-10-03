@@ -42,8 +42,12 @@ milestone bên dưới.
 
 M3 đã dùng RF=2; không đợi cuối dự án mới thêm replication vào happy path. Checksum làm từ M1. Không làm UI đẹp trong lúc backend chưa đọc file đúng. Với một người, ưu tiên một luồng end-to-end chạy thật rồi mở rộng xử lý lỗi.
 
-Kế hoạch chi tiết milestone kế tiếp: [M1 — Storage Node, chia phase P1–P6](M1_IMPLEMENTATION_PLAN.md).
-Các gate trong kế hoạch M1 là điều kiện kiểm tra khi code, chưa phải kết quả đã đạt.
+M0 và M1 đã hoàn thành ngày 03/10/2026. Bằng chứng M1:
+[Storage Node, phase P1–P6](M1_IMPLEMENTATION_PLAN.md): 106 backend tests qua,
+lint/format, schema check và cluster smoke qua; persistence/restart/crash và
+volume độc lập đã được kiểm tra thật. Chưa coi replication/failover hay REST file
+flows là hoàn thành. Milestone tiếp theo là M2: health polling, node snapshots,
+API nodes/cluster và kiểm tra down/recovery/DB restart.
 
 ## 3. Kiểm tra có ý nghĩa
 

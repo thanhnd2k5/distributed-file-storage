@@ -1,15 +1,11 @@
 import errno
 import hashlib
-from concurrent.futures import ThreadPoolExecutor
 
 import grpc
 import pytest
 import storage_pb2
-import storage_pb2_grpc
 
 from storage.chunk_store import ChunkStore, StorageStartupError
-from storage.config import StorageSettings
-from storage.service import StorageService
 from storage.validation import validate_chunk_id, validate_store
 
 CHUNK_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -146,20 +142,9 @@ def test_startup_does_not_follow_or_clean_temp_symlinks(tmp_path):
 
 
 @pytest.fixture
-def rpc_node(tmp_path):
-    settings = StorageSettings(
-        _env_file=None, node_id="p1-node", failure_domain="test", data_dir=tmp_path
-    )
-    server = grpc.server(ThreadPoolExecutor(max_workers=4), options=settings.grpc_options())
-    storage_pb2_grpc.add_StorageServiceServicer_to_server(StorageService(settings), server)
-    port = server.add_insecure_port("127.0.0.1:0")
-    server.start()
-    try:
-        with grpc.insecure_channel(f"127.0.0.1:{port}", options=settings.grpc_options()) as channel:
-            grpc.channel_ready_future(channel).result(timeout=5)
-            yield storage_pb2_grpc.StorageServiceStub(channel), tmp_path
-    finally:
-        server.stop(0).wait()
+def rpc_node(storage_node_factory):
+    stub, _, directory = storage_node_factory("p1-node")
+    return stub, directory
 
 
 @pytest.mark.parametrize("method", ["StoreChunk", "GetChunk", "DeleteChunk"])
@@ -197,13 +182,12 @@ def test_rpc_rejects_bad_store_payload_without_artifacts(rpc_node, data, checksu
 
 
 @pytest.mark.parametrize("size", [1, LIMIT])
-def test_valid_store_remains_unimplemented_in_p1(rpc_node, size):
+def test_valid_store_accepts_chunk_boundaries(rpc_node, size):
     stub, directory = rpc_node
     data = b"x" * size
     request = storage_pb2.StoreChunkRequest(
         chunk_id=CHUNK_ID, data=data, checksum_sha256=hashlib.sha256(data).hexdigest()
     )
-    with pytest.raises(grpc.RpcError) as error:
-        stub.StoreChunk(request, timeout=2)
-    assert error.value.code() == grpc.StatusCode.UNIMPLEMENTED
-    assert list(directory.iterdir()) == []
+    response = stub.StoreChunk(request, timeout=2)
+    assert response.size_bytes == size and not response.already_existed
+    assert (directory / f"{CHUNK_ID}.chunk").read_bytes() == data

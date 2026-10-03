@@ -1,5 +1,19 @@
 # Agent notes — Base B (Zustand + Query)
 
+## Repository-wide test gate
+
+Follow the shared test selection, infrastructure blocker and evidence rules in
+[../AGENTS.md](../AGENTS.md). They apply to frontend work as well.
+
+Run frontend commands from `frontend/`. For affected JavaScript/JSX files, use
+`npm exec -- eslint <affected-files>` with actual paths. Use `npm run build` when
+the change requires compilation/import/bundle evidence; `npm run lint` checks
+the whole frontend only when that scope is justified. The current package has
+no dedicated test/E2E script; do not invent one or describe lint/build as tests.
+For runtime UI/API changes, verify the affected flow with available tooling.
+API-dependent flows require the API to be ready; local lint/build does not require
+Docker. No checks are needed for documentation-only changes.
+
 Before changing code, read:
 
 1. [docs/BASE_B.md](docs/BASE_B.md) — stack locks (auth, session, username; locale vi)
