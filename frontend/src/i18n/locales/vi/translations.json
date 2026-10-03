@@ -1,0 +1,13 @@
+{
+  "nav": {
+    "dashboards": {
+      "dashboards": "Tổng quan",
+      "home": "Trang chủ"
+    },
+    "settings": {
+      "settings": "Cài đặt",
+      "general": "Chung",
+      "appearance": "Giao diện"
+    }
+  }
+}

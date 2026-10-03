@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+SQLAlchemy
+alembic
+psycopg[binary]
+grpcio
+grpcio-tools
+protobuf
+pydantic-settings
+python-multipart
+

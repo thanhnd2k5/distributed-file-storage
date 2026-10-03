@@ -1,0 +1,22 @@
+FROM python:3.12-slim AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app:/app/generated
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/common common
+COPY backend/metadata metadata
+COPY backend/storage storage
+COPY backend/generated generated
+COPY backend/contracts contracts
+COPY backend/scripts scripts
+COPY backend/alembic.ini .
+RUN python scripts/generate_proto.py
+CMD ["python", "-m", "storage.server"]
+
+FROM runtime AS development
+COPY backend/requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt
+COPY backend/tests tests
+COPY backend/pyproject.toml .
+CMD ["python", "-m", "pytest", "-q"]
+

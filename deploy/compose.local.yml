@@ -1,0 +1,119 @@
+name: distributed-file-storage
+
+x-python: &python
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.python
+    target: runtime
+  image: dfs-python:dev
+  init: true
+  restart: unless-stopped
+
+x-storage-env: &storage-env
+  FAILURE_DOMAIN: dev_host
+  GRPC_BIND_HOST: 0.0.0.0
+  DATA_DIR: /data/chunks
+  CHUNK_SIZE_BYTES: "2097152"
+  GRPC_MAX_MESSAGE_BYTES: "8388608"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-storage-health: &storage-health
+  test: ["CMD", "python", "scripts/check_storage.py"]
+  interval: 5s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+services:
+  tests:
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.python
+      target: development
+    image: dfs-python-tests:dev
+    command: ["python", "-m", "pytest", "-q"]
+    environment:
+      TEST_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dfs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dfs}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dfs}
+      POSTGRES_USER: ${POSTGRES_USER:-dfs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copy deploy/.env.example to deploy/.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  metadata:
+    <<: *python
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn metadata.main:create_app --factory --host 0.0.0.0 --port 8000 --workers 1 --timeout-keep-alive 300"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dfs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dfs}
+      STORAGE_NODES_JSON: '[{"node_id":"node-1","host":"storage-node-1","port":50051,"failure_domain":"dev_host"},{"node_id":"node-2","host":"storage-node-2","port":50052,"failure_domain":"dev_host"},{"node_id":"node-3","host":"storage-node-3","port":50053,"failure_domain":"dev_host"}]'
+      DOWNLOAD_TEMP_DIR: /tmp/dfs-downloads
+      CORS_ORIGINS: '["http://localhost:5173"]'
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "127.0.0.1:${METADATA_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  storage-node-1:
+    <<: *python
+    environment:
+      <<: *storage-env
+      NODE_ID: node-1
+      GRPC_PORT: "50051"
+    ports:
+      - "127.0.0.1:${NODE_1_PORT:-50051}:50051"
+    volumes:
+      - node-1-data:/data/chunks
+    healthcheck: *storage-health
+
+  storage-node-2:
+    <<: *python
+    environment:
+      <<: *storage-env
+      NODE_ID: node-2
+      GRPC_PORT: "50052"
+    ports:
+      - "127.0.0.1:${NODE_2_PORT:-50052}:50052"
+    volumes:
+      - node-2-data:/data/chunks
+    healthcheck: *storage-health
+
+  storage-node-3:
+    <<: *python
+    environment:
+      <<: *storage-env
+      NODE_ID: node-3
+      GRPC_PORT: "50053"
+    ports:
+      - "127.0.0.1:${NODE_3_PORT:-50053}:50053"
+    volumes:
+      - node-3-data:/data/chunks
+    healthcheck: *storage-health
+
+volumes:
+  postgres-data:
+  node-1-data:
+  node-2-data:
+  node-3-data:
+

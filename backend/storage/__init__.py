@@ -1,0 +1,1 @@
+"""Independent gRPC storage process."""
