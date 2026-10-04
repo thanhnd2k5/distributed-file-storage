@@ -1,6 +1,6 @@
 # Distributed File Storage — bộ đặc tả V1
 
-**Đặc tả 02/10/2026 · Một người code · M0–M2 hoàn thành 03/10/2026, M3 hoàn thành 04/10/2026.**
+**Đặc tả 02/10/2026 · Một người code · M0–M2 hoàn thành 03/10/2026, M3–M4 hoàn thành 04/10/2026.**
 
 ## Đọc theo thứ tự
 
@@ -14,8 +14,12 @@ Kế hoạch milestone: [M1 — Storage Node thật](M1_IMPLEMENTATION_PLAN.md) 
 thành; [M2 — Metadata quan sát ba node](M2_IMPLEMENTATION_PLAN.md) đã hoàn thành
 P1–P6. [M3 — Upload/download RF=2](M3_IMPLEMENTATION_PLAN.md) đã hoàn thành
 P1–P7 ngày 04/10/2026; Metadata M3 deploy local, lifecycle/crash và smoke RF=2
-thật đã qua. Tiếp theo M4 failure/DELETE/cleanup/repair; xem
-[bàn giao M4](M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
+thật đã qua. [M4 — failure/DELETE/cleanup/repair](M4_IMPLEMENTATION_PLAN.md)
+hoàn thành P1–P7; build local/repair/delete smoke đã qua và fixtures đã dọn đúng
+ownership. Tiếp theo **M5 UI tối thiểu**; xem
+[bàn giao M5](M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu),
+[evidence P6](M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
+[evidence P7](M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
 
 ## Quyết định mới so với bản V2 trước
 
@@ -50,6 +54,24 @@ Evidence implementation M0–M3 và ranh giới chưa làm nằm ở phần ti�
 M4–M6 chỉ hoàn thành khi có code và kiểm tra thật theo gate của từng milestone.
 
 ## Tiến độ implementation — 04/10/2026
+
+**M4 P4–P5 hoàn thành (04/10/2026).** Manual repair source/RF/placement,
+missing/corrupt reconcile và REST filter/cursor/budget/summary đã có code.
+89 ca khác nhau passed trong lượt focused Docker Linux/PostgreSQL (47 repair,
+4 Delete guard mới, 38 direct regressions), Ruff 10 paths qua; không cộng rerun
+hoặc counts trùng P1–P3 thành full suite. Chỉ rebuild tests image, chưa deploy/
+SIGKILL/live smoke hoặc dọn fixture M3. Tiếp theo P6 lifecycle/live smoke.
+Chi tiết: [evidence P4–P5](M4_IMPLEMENTATION_PLAN.md#evidence-p4p5--04102026).
+
+Ghi nhận P1–P3 dưới đây là lịch sử tại thời điểm bàn giao repair.
+
+**M4 P1–P3 hoàn thành (04/10/2026).** Delete RPC, DELETE tombstone/200–202,
+cleanup FAILED/DELETING bounded/fair và worker/lifespan đã có code. 86 ca khác
+nhau passed qua focused integration Docker Linux/PostgreSQL; Ruff 12 paths qua.
+Có warning TestClient; lỗi cleanup tick rỗng cạnh tranh upload đã sửa và checks
+affected qua. Chỉ rebuild tests image; chưa deploy/live smoke/SIGKILL M4,
+chưa repair/UI/hai host hoặc dọn fixture M3. Tiếp theo P4–P5 manual repair.
+Chi tiết: [evidence P1–P3](M4_IMPLEMENTATION_PLAN.md#evidence-p1p3--04102026).
 
 **M3 đã hoàn thành P1–P7 (04/10/2026).** Upload/GET files/download RF=2,
 checksum/fallback và lifecycle có evidence; smoke Compose thật qua node-2 DOWN,

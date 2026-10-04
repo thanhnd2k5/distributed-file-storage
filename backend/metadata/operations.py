@@ -54,6 +54,23 @@ class DataOperation:
         self._check_rpc()
         return self._client.get_chunk(*args, **kwargs)
 
+    def delete_chunk(self, *args, **kwargs):
+        self._check_rpc()
+        return self._client.delete_chunk(*args, **kwargs)
+
+
+def operations_available(state):
+    """Share process-liveness admission with readiness; DB checks stay at the boundary."""
+    worker = state.health_worker
+    client = state.storage_client
+    return (
+        state.initialized
+        and worker is not None
+        and worker.running
+        and client is not None
+        and client.running
+    )
+
 
 @contextmanager
 def data_operation(state):
@@ -62,14 +79,14 @@ def data_operation(state):
     P3/P5 handlers must keep this entire scope in one threadpool invocation.
     HTTP response sending is outside the download preparation scope.
     """
-    if not state.initialized:
+    if not operations_available(state):
         raise OperationError(503, "METADATA_UNAVAILABLE", "Metadata chưa sẵn sàng.")
     if not state.operation_lock.acquire(blocking=False):
         raise OperationError(409, "OPERATION_BUSY", "Một thao tác dữ liệu khác đang chạy.")
     operation = None
     try:
         client = state.storage_client
-        if not state.initialized or client is None or not client.running:
+        if not operations_available(state):
             raise OperationError(503, "METADATA_UNAVAILABLE", "Metadata chưa sẵn sàng.")
         operation = DataOperation(state.session_factory, client)
         yield operation

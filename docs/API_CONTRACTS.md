@@ -2,7 +2,10 @@
 
 **Ngày chốt:** 02/10/2026 · REST cho React, gRPC cho Storage · Đọc cùng `ARCHITECTURE.md`.
 
-Đây là contract trước triển khai. Các JSON dưới đây là mẫu shape; ID, timestamp và checksum là ví dụ. API thực tế phải được kiểm tra bằng integration test, không coi tài liệu này là bằng chứng đã có server chạy.
+Contract V1 được cập nhật theo implementation đến M4. Các JSON dưới đây là
+mẫu shape; ID, timestamp và checksum là ví dụ. Evidence API/runtime nằm trong
+các milestone plans, gồm [M4 P1–P7](M4_IMPLEMENTATION_PLAN.md); tài liệu contract
+không thay integration evidence.
 
 ## 1. Quy ước chung
 
@@ -43,7 +46,7 @@ message phục vụ người dùng; code ổn định cho frontend; details có 
 | 503 | CHUNK_UNAVAILABLE | Không có replica đọc hợp lệ của một chunk |
 | 503 | INTEGRITY_CHECK_FAILED | Full-file size/hash không khớp sau assemble |
 | 503 | TEMP_STORAGE_UNAVAILABLE | Metadata không đủ disk tạm |
-| 503 | METADATA_UNAVAILABLE | App còn phản hồi nhưng DB không dùng được |
+| 503 | METADATA_UNAVAILABLE | Khởi tạo chưa xong, DB không dùng được hoặc scheduler/data RPC client đã dừng |
 | 500 | INTERNAL_ERROR | Lỗi ngoài dự kiến; log nội bộ theo request_id nếu có |
 
 Không dùng 200 kèm error JSON cho request thất bại. Repair trả 200 summary ngay cả khi một số chunk không sửa được vì đó là kết quả một lượt kiểm tra; request không bắt đầu được vẫn trả 409/503.
@@ -184,6 +187,10 @@ Frontend có thể dùng binary blob để save, vì file đã giới hạn 64 M
 
 202 khi còn pending; 200 khi DELETED và pending=0. Xóa logic trước khi RPC; file ẩn và không download/repair ngay. Đừng báo "Đã xóa mọi bản sao" khi mới có 202. UI có thể nói "Đã xóa file, đang dọn các bản sao còn lại" và tra detail nếu cần. Metadata của cleanup giữ qua restart.
 
+Một request chỉ thử cleanup tối đa 8 replica; file nhiều chunk có thể trả 202
+ngay cả khi các node online. Worker tiếp tục các replica còn pending theo
+interval 5 giây khi lock trống; không hứa hoàn tất trong một interval.
+
 ### 2.6 Nodes, cluster và health
 
 `GET /nodes`:
@@ -230,7 +237,7 @@ Capacity/free là filesystem snapshot; used_bytes là committed bytes trong DATA
 
 Node state counts active/suspected/down chỉ tính enabled; disabled tính riêng. Chunk counters cluster chỉ tính files AVAILABLE; cleanup counter tính mọi file chưa dọn hết. operation_busy là snapshot của lock.
 
-`GET /health/live` → `{"status":"LIVE"}`. `/health/ready` → `{"status":"READY"}` khi DB ping thành công, startup recovery và khởi tạo download temp directory/dọn stale temp hoàn tất, health scheduler và data RPC client đang running. DB/config/temp directory chưa ready hoặc scheduler/client đã dừng/lỗi trả 503 METADATA_UNAVAILABLE. Client running nghĩa channels đã khởi tạo và chưa closing/closed, không yêu cầu kết nối thành công tới mọi node. Ready không yêu cầu tất cả node ACTIVE: data plane degraded vẫn cần API để xem và điều khiển. GET nodes/cluster và files/list/detail/chunks vẫn cho đọc snapshot sau startup khi scheduler/client lỗi, miễn DB còn dùng được.
+`GET /health/live` → `{"status":"LIVE"}`. `/health/ready` → `{"status":"READY"}` khi DB ping thành công, startup recovery và khởi tạo download temp directory/dọn stale temp hoàn tất, health scheduler và data RPC client đang running. DB/config/temp directory chưa ready hoặc scheduler/client đã dừng/lỗi trả 503 METADATA_UNAVAILABLE. Upload/download/delete/repair mới cũng bị từ chối với 503 khi scheduler/client dừng; thao tác đã nhận vẫn được drain và commit trước khi đóng tài nguyên. Client running nghĩa channels đã khởi tạo và chưa closing/closed, không yêu cầu kết nối thành công tới mọi node. Ready không yêu cầu tất cả node ACTIVE: data plane degraded vẫn cần API để xem và điều khiển. GET nodes/cluster và files/list/detail/chunks vẫn cho đọc snapshot sau startup khi scheduler/client lỗi, miễn DB còn dùng được.
 
 ### 2.7 Repair
 
@@ -247,16 +254,27 @@ Node state counts active/suspected/down chỉ tính enabled; disabled tính riê
 
 file_id/node_id optional null; max_chunks 1..8, mặc định 8. file_id có giá trị chỉ quét file đó; node_id chỉ chọn chunk có known mapping tới node đó, dùng cho kiểm tra khi node trở lại. Có thể phối hợp cả hai filter. ID không tồn tại trả 404 FILE_NOT_FOUND hoặc 422 VALIDATION_ERROR cho node_id. File ngoài AVAILABLE trả 409.
 
+Request không nhận field ngoài schema; max_chunks phải là JSON integer, không
+nhận boolean/string và không vượt REPAIR_MAX_CHUNKS cấu hình. Explicit file_id
+DELETED cũng trả 409 ở repair; endpoint đọc DELETED vẫn trả 404. Registry row
+disabled vẫn có thể dùng làm node filter, nhưng không được gọi RPC.
+
 Không chỉ quét under-replicated cached state: mỗi selected chunk phải được probe để tìm replica MISSING/corrupt trên node vừa trở lại. Source có checksum hợp lệ là điều kiện repair. Không có source → UNAVAILABLE; không đủ destination → NO_DESTINATION. Khi mapping tới node DOWN, không tính live nhưng không xóa row. Node vắng config không được gọi RPC.
 
 Scan order: file_id ASC (UUID), chunk_index ASC. `after` là object `{ "file_id":"...", "chunk_index":7 }` của chunk cuối đã kiểm tra. `next_after` trả cursor đó nếu còn chunk trong scope, null khi kết thúc. Cursor không là job ID. Client giữ nguyên filter trong một vòng scan; thay filter thì reset after. Khi file bị delete giữa hai request, chunk đó tự ra khỏi scope.
 
+Ngoại lệ khi budget hết trước chunk đầu (ví dụ cleanup ưu tiên đã dùng hết
+budget): checked_chunks=0, results=[], repaired_replicas=0; next_after giữ
+nguyên after đầu vào, có thể null khi chưa từng bắt đầu scan. remaining_chunks
+vẫn đếm scope chưa quét. Client xác nhận scan kết thúc bằng remaining_chunks=0;
+không dùng riêng next_after=null trong response có checked_chunks=0 để kết luận.
+
 ```json
 {
-  "checked_chunks":8,
-  "repaired_replicas":3,
+  "checked_chunks":1,
+  "repaired_replicas":1,
   "remaining_chunks":12,
-  "next_after":{"file_id":"11111111-1111-4111-8111-111111111111","chunk_index":7},
+  "next_after":{"file_id":"11111111-1111-4111-8111-111111111111","chunk_index":0},
   "results":[{
     "file_id":"11111111-1111-4111-8111-111111111111",
     "chunk_id":"22222222-2222-4222-8222-222222222222",
@@ -271,7 +289,22 @@ Scan order: file_id ASC (UUID), chunk_index ASC. `after` là object `{ "file_id"
 
 outcome: HEALTHY, REPAIRED, NO_DESTINATION, UNAVAILABLE, ERROR. Results có đúng checked_chunks phần tử. `remaining_chunks` là số chunk còn **chưa quét sau cursor**, không là số under-replicated đã đo. Khi một chunk đã thử nhưng lỗi, cursor vẫn tiến; chạy vòng scan mới để retry chunk đó. `repaired_replicas` chỉ đếm Store được ack xác nhận. Probe phát hiện replica cũ còn đúng không được tính thành một bản sao mới.
 
+live_replica_count của repair tính các replica được Get/Store xác nhận trong
+lượt này và còn enabled/configured ACTIVE ở snapshot health cuối chunk; source
+SUSPECTED không tính live. Timeout không được tính thành xác nhận mới, dù row
+còn cached VERIFIED. GET placement/cluster vẫn dùng cached counters như mục
+2.3/2.6. Đủ RF nhưng cùng domain trả HEALTHY/domain_degraded=true, không tự
+thêm replica; replica dư khi node cũ trở lại được giữ. Có Store ack nhưng vẫn
+thiếu destination → NO_DESTINATION với count ack đã có; lỗi trong attempts
+có thể trả ERROR, vẫn giữ count ack đã xác nhận.
+
 Lượt ngừng bắt đầu chunk mới sau budget 30 giây, có thể trả ít hơn max_chunks. Số lần RPC/node/chunk hữu hạn, timeout 5 giây, tối đa 2 attempts. HTTP client dành khoảng 180 giây cho lượt repair. UI không retry tự động POST khi timeout: có thể đã ghi thành công; refresh placement trước rồi scan lại.
+
+Trước scan, một lượt cleanup tối đa 8 replica dùng cùng operation lock/cursor
+công bằng có ưu tiên; budget monotonic tính từ đầu request operation, bao gồm
+validation/cleanup. Pending trên node DOWN/disabled không chặn repair vô hạn.
+Budget là điểm dừng bắt đầu chunk mới, không là hard deadline HTTP cho RPC/DB
+đang chạy; 180 giây là timeout client khuyến nghị, không là SLA.
 
 ## 3. gRPC contract
 

@@ -2,7 +2,7 @@ from datetime import UTC
 from typing import Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, field_serializer, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 
 class FileSummary(BaseModel):
@@ -27,6 +27,44 @@ class FileList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class DeleteResult(BaseModel):
+    file_id: UUID
+    status: Literal["DELETING", "DELETED"]
+    cleanup_pending_replicas: int
+
+
+class RepairCursor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    file_id: UUID
+    chunk_index: int = Field(ge=0)
+
+
+class RepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    file_id: UUID | None = None
+    node_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    max_chunks: int = Field(default=8, ge=1, le=8, strict=True)
+    after: RepairCursor | None = None
+
+
+class RepairChunkResult(BaseModel):
+    file_id: UUID
+    chunk_id: UUID
+    chunk_index: int
+    outcome: Literal["HEALTHY", "REPAIRED", "NO_DESTINATION", "UNAVAILABLE", "ERROR"]
+    live_replica_count: int
+    domain_degraded: bool
+    message: str | None = None
+
+
+class RepairResult(BaseModel):
+    checked_chunks: int
+    repaired_replicas: int
+    remaining_chunks: int
+    next_after: RepairCursor | None
+    results: list[RepairChunkResult]
 
 
 class FileDetail(FileSummary):

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import grpc
 import pytest
+from health_control import pause_background
 from sqlalchemy import delete, event, select
 from sqlalchemy.exc import SQLAlchemyError
 from test_metadata_upload import C, start_http, wait_until
@@ -215,7 +216,7 @@ def test_excluded_replica_is_never_called(api, monkeypatch, excluded):
 
 def test_suspected_before_down_and_down_is_usable_fallback(api, monkeypatch):
     file_id = upload(api)
-    api[1].state.health_worker.stop()
+    pause_background(api[1].state.health_worker)
     with api[2].begin() as session:
         session.get(StorageNode, "node-1").status = "DOWN"
         session.get(StorageNode, "node-2").status = "SUSPECTED"
@@ -346,7 +347,7 @@ def test_temp_disk_faults_cleanup_and_return_503(api, monkeypatch, mode):
 @pytest.mark.parametrize("after_get", [False, True])
 def test_database_failure_does_not_fail_file_or_leak_tmp(api, monkeypatch, after_get):
     file_id = upload(api)
-    api[1].state.health_worker.stop()
+    pause_background(api[1].state.health_worker)
     engine = api[2].kw["bind"]
     armed = Event()
     if not after_get:

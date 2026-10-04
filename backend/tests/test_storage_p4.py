@@ -26,6 +26,60 @@ def health(stub):
     return stub.HealthCheck(storage_pb2.HealthCheckRequest(), timeout=2)
 
 
+@pytest.mark.parametrize("stage", ["waiting", "before_unlink"])
+@pytest.mark.parametrize("outcome", ["cancel", "deadline"])
+def test_delete_cancel_or_deadline_cannot_unlink_after_rpc_expired(
+    node, monkeypatch, stage, outcome
+):
+    stub, service, directory = node
+    stub.StoreChunk(request(), timeout=3)
+    entered, inactive, finished, release = Event(), Event(), Event(), Event()
+    original_delete = service.store.delete
+    original_lstat = type(directory).lstat
+
+    def observe(chunk_id, is_active):
+        is_active.__self__.add_callback(inactive.set)
+        entered.set()
+        try:
+            return original_delete(chunk_id, is_active)
+        finally:
+            finished.set()
+
+    def paused_lstat(path, *args, **kwargs):
+        result = original_lstat(path, *args, **kwargs)
+        if path.name == f"{CHUNK_ID}.chunk":
+            assert release.wait(3)
+        return result
+
+    monkeypatch.setattr(service.store, "delete", observe)
+    if stage == "waiting":
+        service.store.operation_lock.acquire()
+    else:
+        monkeypatch.setattr(type(directory), "lstat", paused_lstat)
+    try:
+        call = stub.DeleteChunk.future(
+            storage_pb2.DeleteChunkRequest(chunk_id=CHUNK_ID),
+            timeout=0.2 if outcome == "deadline" else 3,
+        )
+        assert entered.wait(2)
+        if outcome == "cancel":
+            call.cancel()
+            with pytest.raises(grpc.FutureCancelledError):
+                call.result(timeout=2)
+        else:
+            with pytest.raises(grpc.RpcError) as caught:
+                call.result(timeout=2)
+            assert caught.value.code() == grpc.StatusCode.DEADLINE_EXCEEDED
+        assert inactive.wait(2)
+    finally:
+        release.set()
+        if stage == "waiting":
+            service.store.operation_lock.release()
+    assert finished.wait(2)
+    assert (directory / f"{CHUNK_ID}.chunk").read_bytes() == DATA
+    assert service.store.used_bytes == len(DATA)
+
+
 def test_health_uses_cached_snapshot_without_chunk_lock_or_directory_walk(node, monkeypatch):
     stub, service, directory = node
     stub.StoreChunk(request(), timeout=3)
@@ -122,9 +176,9 @@ def test_get_delete_and_health_during_store_commit_observe_legal_order(node, mon
         get_entered.set()
         return original_get(chunk_id)
 
-    def delete(chunk_id):
+    def delete(chunk_id, is_active=lambda: True):
         delete_entered.set()
-        return original_delete(chunk_id)
+        return original_delete(chunk_id, is_active)
 
     monkeypatch.setattr("storage.chunk_store.os.fsync", pause_store_sync)
     monkeypatch.setattr(service.store, "get", get)

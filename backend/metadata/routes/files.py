@@ -14,6 +14,7 @@ from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import ClientDisconnect
 
+from metadata.delete import delete_file
 from metadata.download import DownloadError, prepare_download
 from metadata.download import check_cancel as check_download_cancel
 from metadata.download_response import DownloadResponse
@@ -21,7 +22,7 @@ from metadata.errors import error_response
 from metadata.file_input import FileInputError, invalid_request, temp_storage_unavailable
 from metadata.files import FileNotFound, file_chunks, file_detail, file_snapshot, list_files
 from metadata.operations import OperationError
-from metadata.schemas import ChunkList, FileDetail, FileList, FileSummary
+from metadata.schemas import ChunkList, DeleteResult, FileDetail, FileList, FileSummary
 from metadata.transfers import finish_cancelled, run_owned
 from metadata.upload import upload_file
 
@@ -157,6 +158,36 @@ async def watch_disconnect(request, cancel):
         if (await request.receive())["type"] == "http.disconnect":
             cancel.set()
             return
+
+
+@router.delete(
+    "/files/{file_id}", response_model=DeleteResult, responses={202: {"model": DeleteResult}}
+)
+async def delete(request: Request, file_id: UUID):
+    cancel = Event()
+    task = monitor = None
+    try:
+        async for _ in request.stream():
+            pass
+        task = asyncio.create_task(run_owned(delete_file, request.app.state, file_id, cancel))
+        monitor = asyncio.create_task(watch_disconnect(request, cancel))
+        result = await asyncio.shield(task)
+        return JSONResponse(
+            status_code=200 if result.status == "DELETED" else 202,
+            content=result.model_dump(mode="json"),
+        )
+    except asyncio.CancelledError:
+        cancel.set()
+        if task is not None:
+            await finish_cancelled(task)
+        raise
+    except ClientDisconnect:
+        return error_response(400, "INVALID_REQUEST", "Yêu cầu xóa bị ngắt.")
+    finally:
+        if monitor is not None:
+            monitor.cancel()
+            with suppress(asyncio.CancelledError):
+                await monitor
 
 
 @router.get(

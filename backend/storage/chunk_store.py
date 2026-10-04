@@ -131,15 +131,17 @@ class ChunkStore:
         # Bytes are already an immutable snapshot; hash/response need not hold the lock.
         return GetResult(chunk_id, data, hashlib.sha256(data).hexdigest())
 
-    def delete(self, chunk_id: str) -> bool:
+    def delete(self, chunk_id: str, is_active: Callable[[], bool] = lambda: True) -> bool:
         committed = self.chunk_path(chunk_id)
         with self.operation_lock:
+            self._require_active(is_active)
             try:
                 info = committed.lstat()
             except FileNotFoundError:
                 return False
             if not stat.S_ISREG(info.st_mode):
                 raise OSError(errno.EIO, "Committed chunk is not a regular file")
+            self._require_active(is_active)
             committed.unlink()
             # Subtract the bytes previously counted, even if an external edit changed size.
             counted = self._accounted_sizes.pop(chunk_id, 0)

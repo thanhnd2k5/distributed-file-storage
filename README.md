@@ -26,6 +26,40 @@ native chạy từ `backend/`. Import Python vẫn dùng `metadata`, `storage`, 
 
 ## Trạng thái
 
+**M4 hoàn thành P1–P7 (04/10/2026).** Metadata/3 Storage đã deploy DELETE,
+cleanup bền vững và manual repair. P6 có 10 process lifecycle checks, 5 native
+smoke guards và 1 M3 regression passed; smoke live RF=2/repair/offline DELETE/
+Metadata restart qua. Cả 3 owned fixtures gồm M3 đã xóa qua API, 40 mappings
+xác minh NOT_FOUND; giữ tombstones/history và named volumes. Baseline cuối P6:
+3 nodes ACTIVE/pending=0, 5 services healthy; file ngoài manifest giữ nguyên.
+P7 đã rà DoD/contracts/evidence và chốt bàn giao bằng docs-only, không rerun
+tests/deploy hay kiểm tra lại cluster live. Không coi các focused counts là
+full-suite run; frontend/hai host chưa làm. Tiếp theo **M5: UI tối thiểu**.
+Chi tiết: [bàn giao M5](docs/M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu),
+[evidence P6](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
+[evidence P7](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
+
+Các ghi nhận M4 P1–P5 dưới đây là lịch sử tại thời điểm từng phase.
+
+**M4 P1–P5 hoàn thành (04/10/2026).** Source có manual repair và
+POST `/api/v1/admin/repair` với filter/cursor/budget, verified source/RF file,
+reconcile missing/corrupt và count ack đúng. Lượt P4–P5 có 89 ca khác nhau
+passed trong focused integration Docker Linux/PostgreSQL, Ruff 10 paths qua;
+không là full suite hoặc cộng counts trùng P1–P3. Storage Delete đã thêm guard
+active trước unlink. Chưa deploy/SIGKILL/live smoke hoặc dọn fixture M3;
+tiếp theo **P6 lifecycle và smoke thật**. Chi tiết:
+[evidence P4–P5](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p4p5--04102026).
+
+Ghi nhận P1–P3 dưới đây là lịch sử tại thời điểm bàn giao repair.
+
+**M4 P1–P3 hoàn thành (04/10/2026).** Source đã có Metadata Delete RPC,
+DELETE/tombstone 200–202 và background cleanup FAILED/DELETING tối đa 8 replica/
+lượt, cursor công bằng, restart lifespan và shutdown drain. 86 ca khác nhau
+passed qua focused integration Docker Linux/PostgreSQL, Ruff 12 paths qua;
+không là full-suite run. Chỉ rebuild tests image, chưa deploy/live smoke/
+SIGKILL M4 hoặc dọn fixture M3. Tiếp theo **P4–P5 manual repair**.
+Chi tiết: [plan và evidence M4](docs/M4_IMPLEMENTATION_PLAN.md).
+
 Base M0: dependency lock, config/logging, generated proto, FastAPI live/ready,
 SQLAlchemy và migration bốn bảng, registry/startup recovery, gRPC HealthCheck,
 Compose local với PostgreSQL và ba volume storage riêng. Frontend starter đã có
@@ -47,15 +81,15 @@ Chi tiết: [DoD, evidence và bàn giao M3](docs/M2_IMPLEMENTATION_PLAN.md).
 verified bytes/fallback và lifecycle đã có code và evidence. Metadata M3 deploy
 local; smoke thật node-2 DOWN vẫn download đúng SHA, restart giữ hash/mappings.
 P7 rà source/contracts/DoD và chốt bàn giao bằng thay đổi docs, không chạy lại
-tests/deploy. Một fixture live có manifest để M4 xử lý; DELETE/cleanup/repair
-chưa triển khai. Tiếp theo **M4: failure, DELETE, cleanup và repair**.
+tests/deploy. Một fixture live có manifest để M4 xử lý; tại thời điểm bàn giao
+M3, DELETE/cleanup/repair chưa triển khai. M4 P1–P3 hiện đã có evidence ở trên.
 Chi tiết: [DoD và bàn giao M4](docs/M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
 
 Review bổ sung M3 đã sửa 3 findings ở upload ingress: reject oversized file ngay
 trong multipart parse, charset lỗi trả JSON 400, cancel drain spool write/seek/
 close trước cleanup. 36 focused Docker checks passed (13 mới + 23 upload
-regressions), 15 deselected; Ruff 2 paths qua. Chỉ rebuild tests image, **chưa
-deploy bản sửa ingress** vào Metadata live. Chi tiết:
+regressions), 15 deselected; Ruff 2 paths qua. Tại thời điểm review chỉ rebuild
+tests image; các fixes ingress đã deploy vào Metadata live ở M4 P6. Chi tiết:
 [evidence review M3](docs/M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
 
 Các ghi nhận M3 bên dưới là lịch sử tại thời điểm từng phase.
@@ -180,12 +214,13 @@ chunk thiếu trả NOT_FOUND, lỗi đọc/size local nhận biết trả DATA_
 xóa idempotent: existed=true rồi false; chỉ giảm cached used_bytes sau unlink
 thành công. Lỗi xóa không ack success hay thay đổi accounting.
 
-Các data RPC trả INVALID_ARGUMENT khi input sai. Metadata build M3 P6 đang chạy
-upload/download và GET files/nodes/cluster trên Compose local; DELETE qua REST,
-cleanup worker/repair thuộc M4. Startup recovery chỉ
-đánh dấu upload gián đoạn FAILED và giữ cleanup_pending trong DB; worker xử lý
-chúng thuộc các milestone sau. Node registry khởi tạo DOWN đến health success
-hợp lệ đầu tiên của process hiện tại. M3 đã hoàn thành; tiếp theo M4.
+Các data RPC trả INVALID_ARGUMENT khi input sai. Build M4 P6 đang chạy
+upload/download, GET files/nodes/cluster, DELETE/worker cleanup và manual
+repair trên Compose local, gồm M3 multipart ingress fixes và Storage Delete
+activity guard. Startup đánh dấu upload gián đoạn FAILED và giữ cleanup_pending;
+worker tiếp tục dọn theo DB sau startup. Node registry khởi tạo DOWN đến health
+success hợp lệ đầu tiên của process hiện tại. M4 P7 đã rà DoD/bàn giao M5 sau
+lifecycle/live smoke P6; UI cần giữ đúng 202/pending, repair cursor và timeout.
 
 M1 P4 đã tách stats lock ngắn cho used_bytes: Health đọc cached snapshot mà
 không chờ mutex chunk hay scan directory. Probe phát hiện short write; lỗi
@@ -246,6 +281,20 @@ fixture riêng do lượt chạy tạo.
 docker compose --env-file deploy/.env -f deploy/compose.local.yml exec -T metadata python scripts/smoke_metadata.py
 powershell -ExecutionPolicy Bypass -File backend/scripts/smoke_metadata.ps1
 ```
+
+M4 baseline chỉ đọc snapshots; fault smoke bên dưới chủ động stop/start node-2,
+restart Metadata, upload fixtures mới và dọn chúng qua DELETE API:
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.local.yml exec -T metadata python -O scripts/smoke_metadata.py baseline
+& .\backend\scripts\smoke_failure.ps1
+```
+
+Chỉ chạy fault smoke khi cần lifecycle evidence. Giữ host checkpoints trong
+`.runtime/m4-smoke-<uuid>.json` khi lỗi; không reset volumes hoặc xóa dữ liệu
+ngoài ownership. Fixture M3 bàn giao đã được dọn ở P6, không truyền lại manifest
+M3 cũ làm AVAILABLE fixture. Quy tắc cursor, pending và tích hợp client frontend
+nằm trong [bàn giao M5](docs/M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu).
 
 ## Môi trường Python để code
 
