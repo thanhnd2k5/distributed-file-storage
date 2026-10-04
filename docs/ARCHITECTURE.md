@@ -173,8 +173,10 @@ Metadata gọi HealthCheck mỗi 3 giây/node, deadline 1 giây. Lượt health 
 
 Theo dõi tuổi health bằng monotonic clock trong process; lưu last_success_at UTC để hiển thị. Không dùng đồng hồ do node gửi để quyết định timeout. Node DOWN có thể là network partition; detector không chứng minh máy vật lý đã chết.
 
-Readiness yêu cầu health scheduler còn chạy, cùng DB ping và startup recovery.
-Scheduler lỗi/dừng thì ready trả 503; live và GET nodes/cluster vẫn cho quan sát
+Readiness yêu cầu health scheduler và data RPC client còn running, cùng DB ping,
+startup recovery và khởi tạo download temp directory/dọn stale temp thành công.
+Scheduler/client lỗi hoặc dừng thì ready trả 503; live và GET nodes/cluster,
+files/list/detail/chunks vẫn cho quan sát
 snapshot nếu DB dùng được. Health RPC thất bại của một node không làm scheduler
 dừng hoặc khiến Metadata mất readiness.
 

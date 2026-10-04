@@ -1,6 +1,6 @@
 # Distributed File Storage — bộ đặc tả V1
 
-**Đặc tả 02/10/2026 · Một người code · Implementation M0–M2 hoàn thành 03/10/2026.**
+**Đặc tả 02/10/2026 · Một người code · M0–M2 hoàn thành 03/10/2026, M3 hoàn thành 04/10/2026.**
 
 ## Đọc theo thứ tự
 
@@ -12,7 +12,10 @@
 
 Kế hoạch milestone: [M1 — Storage Node thật](M1_IMPLEMENTATION_PLAN.md) đã hoàn
 thành; [M2 — Metadata quan sát ba node](M2_IMPLEMENTATION_PLAN.md) đã hoàn thành
-P1–P6. Tiếp theo M3 upload/download RF=2; data replication/fallback chưa triển khai.
+P1–P6. [M3 — Upload/download RF=2](M3_IMPLEMENTATION_PLAN.md) đã hoàn thành
+P1–P7 ngày 04/10/2026; Metadata M3 deploy local, lifecycle/crash và smoke RF=2
+thật đã qua. Tiếp theo M4 failure/DELETE/cleanup/repair; xem
+[bàn giao M4](M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
 
 ## Quyết định mới so với bản V2 trước
 
@@ -43,10 +46,80 @@ Lựa chọn tên helper, tách file Python hay refactor nội bộ được t�
 Đã kiểm tra ngày 02/10/2026: protoc sinh stub Python thành công; import client/server modules thành công; descriptor có đúng bốn unary RPC; StoreChunk payload 2 MiB serialize/deserialize đúng và dưới message limit; 11 JSON examples parse hợp lệ. Môi trường kiểm tra: Python 3.12.14, grpcio 1.84.0, protobuf 7.36.2. Đây là phiên bản dùng kiểm tra tài liệu, chưa phải dependency lock của implementation.
 
 Việc compile proto không chứng minh upload, failover hay repair đã hoạt động.
-Evidence implementation M0–M2 và ranh giới chưa làm nằm ở phần tiến độ bên dưới;
-M3–M6 chỉ hoàn thành khi có code và kiểm tra thật theo gate của từng milestone.
+Evidence implementation M0–M3 và ranh giới chưa làm nằm ở phần tiến độ bên dưới;
+M4–M6 chỉ hoàn thành khi có code và kiểm tra thật theo gate của từng milestone.
 
-## Tiến độ implementation — 03/10/2026
+## Tiến độ implementation — 04/10/2026
+
+**M3 đã hoàn thành P1–P7 (04/10/2026).** Upload/GET files/download RF=2,
+checksum/fallback và lifecycle có evidence; smoke Compose thật qua node-2 DOWN,
+recovery và Metadata restart. P7 đã đối chiếu source/contracts/DoD và cập nhật
+docs, không sửa runtime hoặc chạy lại checks đã pass. Một live fixture giữ
+manifest cho M4 DELETE/cleanup; chưa repair/UI/demo hai host. Tiếp theo M4.
+Chi tiết: [evidence P7](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p7--04102026)
+và [bàn giao M4](M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
+
+Review bổ sung M3 đã sửa early file-byte limit, invalid charset envelope và
+cancel/drain spool I/O. 36 focused Docker checks passed (13 mới + 23 regressions),
+15 deselected; Ruff 2 paths qua. Chỉ rebuild tests image, chưa deploy fix hoặc
+rerun live smoke. Chi tiết: [review M3](M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
+
+Các ghi nhận M3 bên dưới là lịch sử tại thời điểm từng phase.
+
+**M3 P6 đã hoàn thành (04/10/2026).** 3 lifecycle cases Docker Linux/PostgreSQL
+và 2 native smoke regressions passed; SIGKILL đúng PENDING/AVAILABLE, actual disk
+faults và restart giữ dữ liệu. Metadata M3 đã deploy local; smoke file 10 MiB +
+17 byte RF=2 qua node-2 DOWN/recovery và Metadata restart, SHA/mapping/volumes
+giữ nguyên. 5 services healthy, download temp rỗng; một live fixture có manifest
+cho M4 cleanup. Ruff 3 Python paths/PowerShell syntax qua; native cache warning.
+Không full suite/frontend hoặc DB restart. Chi tiết:
+[evidence P6 M3](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p6--04102026).
+Tiếp theo P7; M3 chưa hoàn thành.
+
+**M3 P5 đã hoàn thành (04/10/2026).** Download verify chunk/toàn tempfile trước
+200, fallback/observations và response tempfile ownership đã có; lock thả trước
+gửi, cancellation drain trước close/unlink. Startup janitor chỉ dọn đúng managed
+regular tempfiles. 63 ca P5 khác nhau + 8 regressions passed qua các lượt Docker
+Linux/PostgreSQL; Ruff check/format 8 paths qua. Một lỗi harness đã sửa/rerun
+passed; có warning TestClient deprecation. Chỉ rebuild tests image, chưa deploy,
+process crash/restart, live smoke/full suite.
+Chi tiết: [evidence P5 M3](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p5--04102026).
+Tiếp theo P6; M3 chưa hoàn thành. Cleanup/DELETE/repair thuộc M4.
+
+**M3 P4 đã hoàn thành (04/10/2026).** GET list/detail/chunks đúng schema/filter,
+RF snapshot, replica history/counters, DB snapshot chỉ đọc và không lock/RPC.
+77 focused integration checks (46 P4 + 31 cluster regressions) passed trong
+Docker Linux/PostgreSQL, không skipped/deselected; Ruff check/format 6 files qua.
+Có warning TestClient deprecation; chỉ rebuild tests image, chưa deploy/restart
+hoặc live smoke/full suite. known_readable là cached estimate; download chưa có.
+Chi tiết: [evidence P4 M3](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p4--04102026).
+Tiếp theo P5; M3 chưa hoàn thành.
+
+**M3 P3 đã hoàn thành (04/10/2026).** POST files, commit RF=2, attempted mapping
+và failure/cancel persistence qua 38 ca P3 khác nhau trong các lượt focused
+integration Docker Linux/Python 3.12.15, không skipped; Ruff check/format
+5 files qua. Kiểm tra 64 MiB, Store fallback/ack loss, DB interruption,
+ASGI disconnect/task cancellation; warning Starlette/TestClient deprecation.
+Chỉ rebuild tests image; chưa deploy/restart hoặc chạy live smoke/full suite.
+GET files và download chưa có; cleanup thực tế/repair thuộc M4.
+Chi tiết: [evidence P3 M3](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p3--04102026).
+Tiếp theo P4; M3 chưa hoàn thành.
+
+**M3 P2 đã hoàn thành (04/10/2026).** Data RPC client, deadline/retry,
+Store ack/Get bytes verification, operation scopes và lifespan/readiness đã có
+60 focused P2 tests + 10 selected regressions passed trong Docker Linux/Python
+3.12.15, không skipped/deselected; Ruff check/format 6 files qua. Có warning
+Starlette/TestClient deprecation. Chỉ rebuild tests image, chưa deploy/restart
+live services hoặc chạy smoke; chưa có upload API/replication RF=2 thật.
+Chi tiết: [evidence P2 M3](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p2--04102026).
+Tiếp theo P3; M3 chưa hoàn thành.
+
+**M3 P1 đã hoàn thành (04/10/2026).** Logic input/spool/chunk hash và placement
+RF/domain có 106 targeted tests native Windows/Python 3.12.14 passed, không
+skipped/deselected; Ruff check/format 4 files qua. Có một warning cache do sandbox
+chặn ghi. Chưa nối HTTP/DB/gRPC hoặc deploy; chưa có replication/fallback thật.
+Chi tiết: [evidence P1 M3](M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p1--04102026).
+Tiếp theo P2; M3 chưa hoàn thành. Các ghi nhận M0–M2 bên dưới giữ ngày lịch sử.
 
 **M1 đã hoàn thành P1–P6.** Full backend suite 106 passed, không skipped/deselected;
 lint/format 29 files, schema drift check và base smoke HTTP/DB/registry/ba node qua.
