@@ -1,6 +1,7 @@
 from sqlalchemy import func, select, true
 
 from metadata.models import Chunk, ChunkReplica, File, StorageNode
+from metadata.replica_health import health_flags, live_replica_counts
 from metadata.schemas import ClusterSummary, NodeCounts, NodeList, NodeSummary
 
 
@@ -31,22 +32,7 @@ def cluster_summary(session, settings, operation_busy):
         .cte("node_counts")
     )
 
-    live_replicas = (
-        select(
-            ChunkReplica.chunk_id,
-            func.count().label("live_count"),
-            func.count(func.distinct(StorageNode.failure_domain)).label("domain_count"),
-        )
-        .join(StorageNode, StorageNode.node_id == ChunkReplica.node_id)
-        .where(
-            ChunkReplica.status == "VERIFIED",
-            ~ChunkReplica.cleanup_pending,
-            StorageNode.enabled,
-            StorageNode.status == "ACTIVE",
-        )
-        .group_by(ChunkReplica.chunk_id)
-        .cte("live_replicas")
-    )
+    live_replicas = live_replica_counts()
 
     chunk_health = (
         select(
@@ -61,21 +47,18 @@ def cluster_summary(session, settings, operation_busy):
         .cte("chunk_health")
     )
 
+    flags = health_flags(
+        chunk_health.c.live_count,
+        chunk_health.c.domain_count,
+        chunk_health.c.rf,
+        func.least(chunk_health.c.rf, node_counts.c.configured_failure_domains),
+    )
     chunk_counts = (
         select(
-            func.count()
-            .filter(chunk_health.c.live_count > 0, chunk_health.c.live_count < chunk_health.c.rf)
-            .label("under_replicated_chunks"),
-            func.count().filter(chunk_health.c.live_count == 0).label("unavailable_chunks"),
-            func.count()
-            .filter(
-                chunk_health.c.domain_count
-                < func.least(chunk_health.c.rf, node_counts.c.configured_failure_domains)
-            )
-            .label("domain_degraded_chunks"),
-            func.count()
-            .filter(chunk_health.c.live_count > chunk_health.c.rf)
-            .label("over_replicated_chunks"),
+            *[
+                func.count().filter(condition).label(f"{name}_chunks")
+                for name, condition in flags.items()
+            ]
         )
         .select_from(chunk_health.join(node_counts, true()))
         .cte("chunk_counts")

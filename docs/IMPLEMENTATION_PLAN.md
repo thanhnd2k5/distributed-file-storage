@@ -69,12 +69,62 @@ và xử lý disabled history. 54 targeted checks native + 53 focused integratio
 Docker passed; lint/format 8 files và baseline REST read-only `-O` qua sau deploy
 Metadata. Không rerun full suite hoặc DB/node lifecycle smoke P5.
 
-**Milestone tiếp theo: M3 upload/download RF=2.** Bắt đầu validation/chunking
-và placement enabled ACTIVE theo failure domain; lưu attempted PENDING trước
-Store, chỉ AVAILABLE khi đủ RF mỗi chunk, giữ mapping/cleanup flags khi lỗi.
-Download phải assemble tempfile, xác minh checksum và thử fallback trước HTTP
-200. Gate M3: file nhiều chunk có hai replicas/chunk, download SHA đúng, tắt
-một node vẫn đọc được. Chi tiết bất biến ở phần bàn giao cuối phase plan M2.
+**M3 đã hoàn thành P1–P7 ngày 04/10/2026.** Upload nhiều chunk đủ RF=2,
+download SHA đúng trước 200 và fallback khi một node dừng đã qua gate; Metadata
+M3 deploy local. P7 rà source/contracts/DoD/evidence và chốt bàn giao M4 bằng
+docs, không chạy lại tests hoặc deploy. Counts dưới đây là lịch sử từng phase,
+không cộng regression/rerun thành full-suite evidence.
+
+Kế hoạch chi tiết: [M3 — Upload/download RF=2, phase P1–P7](M3_IMPLEMENTATION_PLAN.md).
+P1 validation/chunking/placement → P2 data RPC và operation boundary → P3 upload
+commit/failure → P4 GET list/detail/chunks → P5 download integrity/fallback/tempfile
+→ P6 lifecycle và Compose smoke thật → P7 rà DoD/bàn giao M4. P1 hoàn thành
+04/10/2026: 106 targeted tests native Windows/Python 3.12.14 passed, Ruff
+check/format 4 files qua; một warning cache do sandbox chặn ghi. Chưa nối
+HTTP/DB/gRPC, chưa deploy hoặc chạy smoke; replication/fallback chưa có evidence.
+P2 cũng hoàn thành 04/10/2026: data RPC verification/retry, operation boundary
+và lifespan qua 60 focused P2 tests + 10 selected regressions trong Docker Linux/
+Python 3.12.15; Ruff check/format 6 files qua. Chỉ rebuild tests image, chưa
+deploy/restart live services hoặc chạy smoke.
+P3 hoàn thành 04/10/2026: POST files/RF=2, PENDING trước Store, commit AVAILABLE,
+fallback và failed/cancel persistence có 38 ca P3 khác nhau passed qua các lượt
+focused integration Docker Linux/Python 3.12.15; Ruff check/format 5 files qua.
+Có evidence 64 MiB, DB interruption, ASGI disconnect/cancellation và lost ack;
+chỉ rebuild tests image, chưa deploy/restart hoặc smoke.
+P4 hoàn thành 04/10/2026: GET list/detail/chunks, pagination/visibility, replica
+history và counters dùng chung cluster; snapshot DB chỉ đọc, không lock/RPC.
+77 focused integration checks (46 P4 + 31 cluster regressions) passed Docker
+Linux/PostgreSQL, Ruff check/format 6 files qua; một warning TestClient deprecation.
+Chỉ rebuild tests image; chưa deploy/restart hoặc live smoke/full suite.
+P5 hoàn thành 04/10/2026: download verify chunk/toàn tempfile trước 200,
+fallback và observations, response ownership/drain và startup janitor.
+63 ca P5 khác nhau + 8 regressions passed qua các lượt focused integration
+Docker Linux/PostgreSQL; Ruff check/format 8 paths qua. Một lỗi harness đã sửa
+và rerun passed; có warning TestClient deprecation. Chỉ rebuild tests image;
+chưa deploy, process crash/restart hoặc live smoke/full suite.
+P6 hoàn thành 04/10/2026: 3 Docker lifecycle cases và 2 native smoke guard
+regressions passed; SIGKILL PENDING/AVAILABLE, disk faults và restart thật trong
+isolated schema/dirs. Metadata M3 deploy local; Compose smoke RF=2 10 MiB +
+17 byte qua node-2 DOWN/recovery và Metadata restart, downloaded SHA/mapping
+giữ nguyên, volumes riêng không đổi, 5 services healthy/download temp rỗng.
+Ruff 3 Python paths và PowerShell syntax qua; một live fixture lưu manifest
+cho M4 cleanup. Chưa full suite/frontend hoặc PostgreSQL restart.
+P7 hoàn thành 04/10/2026: DoD đã đối chiếu source/evidence, giữ ranh giới M4–M6
+và ghi rõ fixture live/manifest. No execution cho docs-only, `git diff --check`
+qua; không sửa runtime/tests/config/dependencies, không rerun checks đã pass.
+
+Review bổ sung M3 đã sửa 3 upload ingress findings: early actual-byte limit,
+charset lỗi trả 400 và cancellation drain trước close spool. 36 focused Docker
+checks passed, 15 deselected; Ruff 2 paths qua. Chưa deploy fix hoặc rerun live
+smoke/full suite; xem [evidence review M3](M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
+
+**Milestone tiếp theo: M4 failure/DELETE/cleanup/repair.** Bổ sung Metadata
+Delete RPC wrapper/coordinator, tombstone bền vững, cleanup bounded khi node
+offline và repair theo RF snapshot/cursor/budget. Dùng lại data lock/transaction
+boundary; fallback download không thay repair. Một AVAILABLE fixture P6 có 6
+chunks/12 mappings giữ host manifest để xử lý qua DELETE M4, không raw-delete
+DB/chunks/reset volumes. Chi tiết:
+[bàn giao M4](M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
 
 ## 3. Kiểm tra có ý nghĩa
 

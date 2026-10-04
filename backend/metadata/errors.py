@@ -3,6 +3,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
+from metadata.operations import OperationError
+
 
 def error_response(status: int, code: str, message: str, details: dict | None = None):
     return JSONResponse(
@@ -20,3 +22,7 @@ async def validation_error(request: Request, exc: RequestValidationError):
 async def http_error(request: Request, exc: HTTPException):
     code = "NOT_FOUND" if exc.status_code == 404 else "INVALID_REQUEST"
     return error_response(exc.status_code, code, "Không thể xử lý yêu cầu.")
+
+
+async def operation_error(request: Request, exc: OperationError):
+    return error_response(exc.status_code, exc.code, str(exc))

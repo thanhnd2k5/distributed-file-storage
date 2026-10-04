@@ -43,6 +43,78 @@ không sửa runtime hoặc chạy lại tests. Counts P1–P5 có regression tr
 không coi là một full-suite run. Tiếp theo **M3: upload/download RF=2**.
 Chi tiết: [DoD, evidence và bàn giao M3](docs/M2_IMPLEMENTATION_PLAN.md).
 
+**M3 đã hoàn thành P1–P7 (04/10/2026).** Upload/download RF=2, GET files/placement,
+verified bytes/fallback và lifecycle đã có code và evidence. Metadata M3 deploy
+local; smoke thật node-2 DOWN vẫn download đúng SHA, restart giữ hash/mappings.
+P7 rà source/contracts/DoD và chốt bàn giao bằng thay đổi docs, không chạy lại
+tests/deploy. Một fixture live có manifest để M4 xử lý; DELETE/cleanup/repair
+chưa triển khai. Tiếp theo **M4: failure, DELETE, cleanup và repair**.
+Chi tiết: [DoD và bàn giao M4](docs/M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
+
+Review bổ sung M3 đã sửa 3 findings ở upload ingress: reject oversized file ngay
+trong multipart parse, charset lỗi trả JSON 400, cancel drain spool write/seek/
+close trước cleanup. 36 focused Docker checks passed (13 mới + 23 upload
+regressions), 15 deselected; Ruff 2 paths qua. Chỉ rebuild tests image, **chưa
+deploy bản sửa ingress** vào Metadata live. Chi tiết:
+[evidence review M3](docs/M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
+
+Các ghi nhận M3 bên dưới là lịch sử tại thời điểm từng phase.
+
+**M3 P6 đã hoàn thành (04/10/2026).** Metadata M3 đã deploy local. 3 lifecycle
+tests Docker Linux/PostgreSQL và 2 native regressions smoke passed: SIGKILL ở
+PENDING/AVAILABLE, restart và fault trên disk riêng. Smoke Compose RF=2 thật qua
+với file 10 MiB + 17 byte: node-2 DOWN vẫn download đúng SHA, recovery và restart
+Metadata giữ hash/mapping; ba volumes riêng không đổi. 5 services healthy, temp
+download rỗng. Ruff 3 Python paths và PowerShell syntax qua. Một fixture live
+còn lại có manifest cho M4 cleanup; chưa full suite/frontend hoặc DB restart.
+Tiếp theo **P7 rà DoD/evidence và bàn giao M4**; M3 chưa hoàn thành.
+Chi tiết: [evidence P6 M3](docs/M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p6--04102026).
+
+**M3 P5 đã hoàn thành (04/10/2026).** Download xác minh chunk và SHA-256 toàn
+tempfile trước HTTP 200, fallback replica và lưu observations; response sở hữu
+snapshot disk, giải phóng lock trước gửi và dọn tempfile khi lỗi/disconnect/cancel.
+Startup dọn stale download temp đúng phạm vi. 63 ca P5 khác nhau + 8 regressions
+passed qua các lượt focused integration Docker Linux/PostgreSQL; Ruff check/format
+8 paths qua. Có warning TestClient deprecation; một lỗi harness đã sửa và ca lỗi
+rerun passed. Chỉ rebuild tests image, chưa deploy hoặc live smoke/full suite.
+Tiếp theo **P6 lifecycle và smoke RF=2 thật**; M3 chưa hoàn thành.
+Chi tiết: [evidence P5 M3](docs/M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p5--04102026).
+
+**M3 P4 đã hoàn thành (04/10/2026).** GET files/list/detail/chunks có pagination,
+status visibility, replica history và counters dùng chung với cluster. GET dùng
+snapshot DB chỉ đọc, không lock/RPC; vẫn đọc khi Store bận. 77 focused integration
+checks (46 P4 + 31 cluster regressions) passed trong Docker Linux/PostgreSQL,
+không skipped; Ruff check/format 6 files qua. Một warning TestClient deprecation.
+Chỉ rebuild tests image; chưa deploy/restart, full suite hoặc live smoke.
+Tiếp theo **P5 download integrity/fallback/tempfile**; M3 chưa hoàn thành.
+Chi tiết: [evidence P4 M3](docs/M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p4--04102026).
+
+**M3 P3 đã hoàn thành (04/10/2026).** POST `/api/v1/files` upload thật RF=2:
+PENDING commit trước Store, đủ replica mới AVAILABLE/201; fallback giữ attempted
+mappings, lỗi/cancel lưu FAILED và cleanup flags. 38 ca P3 khác nhau passed
+qua các lượt focused integration Docker Linux/Python 3.12.15, không skipped;
+Ruff check/format 5 files qua. Đã kiểm tra file 64 MiB, ack loss, DB interruption
+và ASGI disconnect/cancellation. Có warning Starlette/TestClient deprecation.
+Chỉ rebuild tests image; chưa deploy/restart live services, full suite hoặc smoke.
+Tiếp theo **P4 GET list/detail/chunks**; download P5, cleanup/repair M4 chưa làm.
+Chi tiết: [evidence P3 M3](docs/M3_IMPLEMENTATION_PLAN.md#bằng-chứng-p3--04102026).
+
+**M3 P2 đã hoàn thành (04/10/2026).** Data RPC client xác minh Store ack/Get
+bytes, deadline/retry/cancel hữu hạn; operation scopes với transaction ngắn,
+lock nonblocking và lifespan drain trước đóng channels/engine. 60 focused P2
+tests + 10 selected regressions passed trong Docker Linux/Python 3.12.15, không
+skipped/deselected; Ruff check/format 6 files qua. Có warning Starlette/TestClient
+deprecation. Chỉ rebuild tests image; chưa deploy/restart live services hoặc
+chạy smoke. Tiếp theo P3 upload coordinator/POST files; M3 chưa hoàn thành.
+Chi tiết: [plan và evidence M3](docs/M3_IMPLEMENTATION_PLAN.md).
+
+**M3 P1 đã hoàn thành (04/10/2026).** Validation multipart đã parse, actual
+spool size, chunking/checksum và placement RF/domain: 106 targeted tests native
+Windows/Python 3.12.14 passed, không skipped/deselected; Ruff check/format 4 files
+qua. Có một warning cache bị sandbox chặn ghi. Chưa nối HTTP/DB/gRPC, chạy smoke
+hoặc deploy; replication/fallback thật chưa triển khai. Tiếp theo P2 data RPC
+client/operation boundary; [plan và evidence M3](docs/M3_IMPLEMENTATION_PLAN.md).
+
 Review bổ sung M2 đã sửa guard schema/validation của smoke khi chạy Python `-O`,
 thời gian inf/nan và readiness khi scheduler dừng, smoke có disabled history.
 Regression: 54 targeted checks native + 53 focused integration Docker Linux
@@ -108,13 +180,12 @@ chunk thiếu trả NOT_FOUND, lỗi đọc/size local nhận biết trả DATA_
 xóa idempotent: existed=true rồi false; chỉ giảm cached used_bytes sau unlink
 thành công. Lỗi xóa không ack success hay thay đổi accounting.
 
-Các data RPC trả INVALID_ARGUMENT khi input sai. Chưa có upload,
-download, delete qua REST hay cleanup worker/repair. Health polling đã qua
-integration P3; nodes/cluster APIs đã qua P4 và đang chạy trên Metadata build M2
-sau Compose smoke P5. Startup recovery chỉ
+Các data RPC trả INVALID_ARGUMENT khi input sai. Metadata build M3 P6 đang chạy
+upload/download và GET files/nodes/cluster trên Compose local; DELETE qua REST,
+cleanup worker/repair thuộc M4. Startup recovery chỉ
 đánh dấu upload gián đoạn FAILED và giữ cleanup_pending trong DB; worker xử lý
 chúng thuộc các milestone sau. Node registry khởi tạo DOWN đến health success
-hợp lệ đầu tiên của process hiện tại. M2 đã hoàn thành; luồng file thuộc M3.
+hợp lệ đầu tiên của process hiện tại. M3 đã hoàn thành; tiếp theo M4.
 
 M1 P4 đã tách stats lock ngắn cho used_bytes: Health đọc cached snapshot mà
 không chờ mutex chunk hay scan directory. Probe phát hiện short write; lỗi
@@ -149,11 +220,14 @@ PostgreSQL không publish port ra host/LAN; Metadata/gRPC local bind 127.0.0.1.
 - Cluster: http://localhost:8000/api/v1/cluster
 - gRPC node-1/2/3: localhost:50051/50052/50053.
 
-`ready` kiểm tra DB, startup initialization và health scheduler đang chạy;
-không yêu cầu mọi node ACTIVE. Scheduler lỗi/dừng trả ready 503; live và GET
-nodes/cluster vẫn cho xem snapshot nếu DB dùng được.
+`ready` trong source M3 P5 kiểm tra DB, startup initialization (gồm download
+temp directory và stale-temp cleanup), health scheduler
+và data RPC client còn running; không yêu cầu mọi node ACTIVE. Scheduler/client
+lỗi/dừng trả ready 503; live và GET
+nodes/cluster và files/list/detail/chunks vẫn cho xem snapshot nếu DB dùng được.
 `live` vẫn hoạt động nếu DB mất kết nối sau startup. Cấu hình sai fail ngay khi
-khởi động; lỗi DB/schema lúc initialize giữ readiness 503, cần restart sau khi sửa.
+khởi động; lỗi DB/schema/temp directory lúc initialize giữ readiness 503,
+cần restart sau khi sửa.
 
 ```powershell
 docker compose --env-file deploy/.env -f deploy/compose.local.yml logs --tail 100 metadata

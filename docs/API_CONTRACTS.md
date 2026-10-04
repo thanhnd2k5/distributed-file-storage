@@ -62,13 +62,13 @@ Không dùng 200 kèm error JSON cho request thất bại. Repair trả 200 summ
 | GET | `/cluster` | Summary cluster và cấu hình demo | 200 ClusterSummary |
 | POST | `/admin/repair` | Một lượt repair có giới hạn | 200 RepairResult |
 | GET | `/health/live` | Metadata process đang phản hồi | 200 |
-| GET | `/health/ready` | DB/config/khởi tạo xong, health scheduler đang chạy | 200 hoặc 503 |
+| GET | `/health/ready` | DB/config/khởi tạo xong (gồm download temp directory), health scheduler và data RPC client running | 200 hoặc 503 |
 
 Paths trong bảng nối sau `/api/v1`. Không tạo REST endpoints trên Storage Nodes. Không cần node registration API; registry lấy từ config.
 
 ### 2.1 FileSummary và upload
 
-`POST /files`: `multipart/form-data`, **một field `file` bắt buộc**; không kèm JSON body. Không nhận chunk size/RF từ browser. Reject nhiều file trong cùng request. Kiểm tra actual spool size, không tin Content-Length là size của riêng file.
+`POST /files`: `multipart/form-data`, **một field `file` bắt buộc**; không kèm JSON body. Không nhận chunk size/RF từ browser. Reject nhiều file trong cùng request. Đếm actual file bytes khi parse multipart để dừng và trả 413 FILE_TOO_LARGE khi vượt limit, rồi kiểm tra actual spool size trước coordinator; không tin Content-Length là size của riêng file. Charset không tồn tại hoặc không dùng được để decode multipart trả 400 INVALID_REQUEST. Cancel khi spool I/O đang chạy phải drain I/O trước khi đóng spool.
 
 201 trả sau commit AVAILABLE; `Location: /api/v1/files/{id}`:
 
@@ -230,7 +230,7 @@ Capacity/free là filesystem snapshot; used_bytes là committed bytes trong DATA
 
 Node state counts active/suspected/down chỉ tính enabled; disabled tính riêng. Chunk counters cluster chỉ tính files AVAILABLE; cleanup counter tính mọi file chưa dọn hết. operation_busy là snapshot của lock.
 
-`GET /health/live` → `{"status":"LIVE"}`. `/health/ready` → `{"status":"READY"}` khi DB ping thành công, startup recovery hoàn tất và health scheduler đang chạy. DB/config chưa ready hoặc scheduler đã dừng/lỗi trả 503 METADATA_UNAVAILABLE. Ready không yêu cầu tất cả node ACTIVE: data plane degraded vẫn cần API để xem và điều khiển. GET nodes/cluster vẫn cho đọc snapshot sau startup khi scheduler lỗi, miễn DB còn dùng được.
+`GET /health/live` → `{"status":"LIVE"}`. `/health/ready` → `{"status":"READY"}` khi DB ping thành công, startup recovery và khởi tạo download temp directory/dọn stale temp hoàn tất, health scheduler và data RPC client đang running. DB/config/temp directory chưa ready hoặc scheduler/client đã dừng/lỗi trả 503 METADATA_UNAVAILABLE. Client running nghĩa channels đã khởi tạo và chưa closing/closed, không yêu cầu kết nối thành công tới mọi node. Ready không yêu cầu tất cả node ACTIVE: data plane degraded vẫn cần API để xem và điều khiển. GET nodes/cluster và files/list/detail/chunks vẫn cho đọc snapshot sau startup khi scheduler/client lỗi, miễn DB còn dùng được.
 
 ### 2.7 Repair
 
