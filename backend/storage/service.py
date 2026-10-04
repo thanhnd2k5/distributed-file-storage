@@ -72,9 +72,11 @@ class StorageService(storage_pb2_grpc.StorageServiceServicer):
 
     def DeleteChunk(self, request, context):
         try:
-            existed = self.store.delete(request.chunk_id)
+            existed = self.store.delete(request.chunk_id, context.is_active)
         except ValueError as exc:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except InactiveStoreError:
+            context.abort(grpc.StatusCode.CANCELLED, "Delete request is no longer active")
         except OSError as exc:
             logger.exception("Delete filesystem operation failed")
             if exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOTDIR}:

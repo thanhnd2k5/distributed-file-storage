@@ -115,8 +115,9 @@ qua; không sửa runtime/tests/config/dependencies, không rerun checks đã pa
 
 Review bổ sung M3 đã sửa 3 upload ingress findings: early actual-byte limit,
 charset lỗi trả 400 và cancellation drain trước close spool. 36 focused Docker
-checks passed, 15 deselected; Ruff 2 paths qua. Chưa deploy fix hoặc rerun live
-smoke/full suite; xem [evidence review M3](M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
+checks passed, 15 deselected; Ruff 2 paths qua. Tại thời điểm review chưa deploy
+fix hoặc rerun live smoke/full suite; fixes được deploy ở M4 P6. Xem
+[evidence review M3](M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
 
 **Milestone tiếp theo: M4 failure/DELETE/cleanup/repair.** Bổ sung Metadata
 Delete RPC wrapper/coordinator, tombstone bền vững, cleanup bounded khi node
@@ -125,6 +126,47 @@ boundary; fallback download không thay repair. Một AVAILABLE fixture P6 có 6
 chunks/12 mappings giữ host manifest để xử lý qua DELETE M4, không raw-delete
 DB/chunks/reset volumes. Chi tiết:
 [bàn giao M4](M3_IMPLEMENTATION_PLAN.md#bàn-giao-m4--failure-delete-cleanup-và-repair).
+
+Kế hoạch chi tiết M4: [Failure, DELETE, cleanup bền vững và manual repair, P1–P7](M4_IMPLEMENTATION_PLAN.md)
+(lập 04/10/2026, đã hoàn thành P1–P7). P1 Delete RPC → P2 cleanup engine/DELETE
+tombstone → P3 worker/recovery/drain → P4 repair một chunk → P5 REST cursor/budget
+→ P6 fault lifecycle/smoke thật → P7 rà DoD/bàn giao M5. Mỗi phase có gate và
+focused checks riêng; việc lập kế hoạch không là evidence cleanup/repair đã qua.
+
+M4 P1–P3 hoàn thành 04/10/2026: 86 ca khác nhau passed qua focused integration
+Docker Linux/PostgreSQL, Ruff 12 Python paths qua; không là full-suite run.
+DELETE/cleanup bền vững có HTTP/gRPC/DB và restart lifespan evidence; chưa
+process SIGKILL/live smoke/deploy M4 hoặc dọn fixture M3. Tiếp theo P4–P5 repair.
+Chi tiết [evidence P1–P3](M4_IMPLEMENTATION_PLAN.md#evidence-p1p3--04102026).
+
+M4 P4–P5 cũng hoàn thành 04/10/2026: repair verified source/RF snapshot,
+missing/corrupt reconcile và POST admin repair với filter/cursor/budget. 89 ca
+khác nhau passed trong lượt focused integration, Ruff 10 paths qua; có regression
+trùng P1–P3 nên không cộng counts milestone. Storage Delete có guard active
+trước unlink để tránh xóa trễ sau timeout/cancel. Chưa deploy/live smoke/SIGKILL;
+tiếp theo P6 lifecycle và smoke thật, sau đó P7. Chi tiết
+[evidence P4–P5](M4_IMPLEMENTATION_PLAN.md#evidence-p4p5--04102026).
+
+M4 P6 hoàn thành 04/10/2026: 10 actual process lifecycle checks, 5 native guards
+và 1 M3 shared-helper regression passed qua focused checks. Metadata/3 Storage
+deploy build hiện hành; live repair RF=2, node recovery, offline DELETE qua
+Metadata restart và cleanup bytes thật đều qua. Ba owned fixtures gồm M3 đã
+DELETED; 40 mappings/69,206,135 replica bytes được xác minh mất bằng GetChunk
+NOT_FOUND, DB giữ tombstones/history; named volumes không đổi. Cluster cuối
+pending=0/3 ACTIVE và 5 services healthy, fixture ngoài manifest giữ nguyên.
+Chưa full suite/frontend/hai host; tiếp theo P7 rà DoD và bàn giao M5.
+Chi tiết [evidence P6](M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026).
+
+M4 P7 hoàn thành 04/10/2026: đối chiếu DoD/source/contracts và host manifests
+P6, sửa ví dụ repair/mô tả summary cho khớp schema, chốt trạng thái fixtures và
+hướng dẫn chạy. No execution vì docs-only; không rerun tests/build/smoke/deploy
+hoặc kiểm tra lại cluster live. **M4 hoàn thành; milestone tiếp theo M5 UI tối
+thiểu**, gồm upload/list/download/delete, detail/placement, nodes/cluster và
+manual repair. Frontend starter cần client không credentials/token cho API V1,
+adapter error envelope, routes không login guard, mutation/cursor/pending UX
+đúng contract; chưa triển khai các thay đổi này ở P7. Chi tiết
+[bàn giao M5](M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu) và
+[evidence P7](M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
 
 ## 3. Kiểm tra có ý nghĩa
 

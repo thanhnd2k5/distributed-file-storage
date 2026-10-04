@@ -15,7 +15,8 @@ from metadata.config import MetadataSettings
 from metadata.db import create_database
 from metadata.download_temp import initialize_download_temp
 from metadata.errors import error_response, http_error, operation_error, validation_error
-from metadata.operations import OperationError
+from metadata.operations import OperationError, operations_available
+from metadata.routes.admin import router as admin_router
 from metadata.routes.cluster import router as cluster_router
 from metadata.routes.files import router as files_router
 from metadata.storage_client import StorageClient
@@ -44,6 +45,7 @@ def create_app(settings: MetadataSettings | None = None) -> FastAPI:
         try:
             await run_in_threadpool(initialize_under_lock)
             worker = MetadataWorker(session_factory, settings)
+            worker.cleanup_state = app.state
             app.state.health_worker = worker
             await run_in_threadpool(worker.start)
             storage_client = StorageClient(settings)
@@ -53,10 +55,10 @@ def create_app(settings: MetadataSettings | None = None) -> FastAPI:
             logger.info("Metadata registry and startup recovery initialized")
         except Exception:
             logger.exception("Metadata startup failed; readiness remains unavailable")
-            if storage_client is not None:
-                await run_in_threadpool(storage_client.close)
             if worker is not None:
                 await run_in_threadpool(worker.stop)
+            if storage_client is not None:
+                await run_in_threadpool(storage_client.close)
         try:
             yield
         finally:
@@ -69,13 +71,12 @@ def create_app(settings: MetadataSettings | None = None) -> FastAPI:
                         storage_client.close()
 
             try:
+                # Stop scheduling and drain cleanup before closing its data client.
+                if worker is not None:
+                    await run_in_threadpool(worker.stop)
                 await run_in_threadpool(drain_data_operations)
             finally:
-                try:
-                    if worker is not None:
-                        await run_in_threadpool(worker.stop)
-                finally:
-                    await run_in_threadpool(engine.dispose)
+                await run_in_threadpool(engine.dispose)
 
     app = FastAPI(title="Distributed File Storage", version="0.1.0", lifespan=lifespan)
     app.state.initialized = False
@@ -97,6 +98,7 @@ def create_app(settings: MetadataSettings | None = None) -> FastAPI:
     app.add_exception_handler(OperationError, operation_error)
     app.include_router(cluster_router)
     app.include_router(files_router)
+    app.include_router(admin_router)
 
     @app.get("/api/v1/health/live", tags=["health"])
     def live():
@@ -105,13 +107,8 @@ def create_app(settings: MetadataSettings | None = None) -> FastAPI:
     @app.get("/api/v1/health/ready", tags=["health"])
     def ready():
         try:
-            if not app.state.initialized:
-                raise RuntimeError("Startup initialization incomplete")
-            worker = app.state.health_worker
-            if worker is None or not worker.running:
-                raise RuntimeError("Health scheduler is not running")
-            if app.state.storage_client is None or not app.state.storage_client.running:
-                raise RuntimeError("Data RPC client is not running")
+            if not operations_available(app.state):
+                raise RuntimeError("Metadata process is not ready for data operations")
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
         except Exception:

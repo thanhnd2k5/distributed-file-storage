@@ -188,7 +188,22 @@ Lượt repair chọn theo `(file_id, chunk_index)` tăng dần với cursor; xe
 
 Nếu thiếu live RF, Metadata giữ một source đúng, chọn destination, tạo/upsert PENDING trước Store, xác nhận rồi chuyển VERIFIED. Chỉ copy số replica cần thiếu, không copy toàn file. Source/destination đều đi qua Metadata, không node-to-node RPC. Có thể phục hồi MISSING tại cùng node bằng Store. Với CORRUPTED, chỉ Delete replica lỗi rồi Store lại khi đã có source khác được xác minh; Store không tự ghi đè bytes lỗi.
 
-Lượt trả counts repaired/unavailable/no_destination/errors và remaining, không báo repaired khi chỉ gửi request. Failed attempts có mapping để retry ở lượt sau. Không repair file FAILED/DELETING/DELETED. Cleanup của delete có ưu tiên trước repair. Không có background repair V1; cleanup background vẫn bắt buộc.
+Lượt trả `checked_chunks`, `repaired_replicas`, `remaining_chunks`, `next_after`
+và `results` theo từng chunk; mỗi result có outcome HEALTHY/REPAIRED/
+NO_DESTINATION/UNAVAILABLE/ERROR. Không có aggregate fields riêng cho từng
+outcome; UI có thể tổng hợp từ results đã nhận. Không báo repaired khi chỉ gửi
+request. Failed attempts có mapping để retry ở lượt sau. Không repair file
+FAILED/DELETING/DELETED. Cleanup của delete có ưu tiên trước repair. Không có
+background repair V1; cleanup background vẫn bắt buộc.
+
+Cleanup ưu tiên là một pass tối đa 8 replica dưới cùng operation lock trước
+scan; budget monotonic tính cả pass này. Nếu chưa bắt đầu chunk nào vì hết
+budget, giữ cursor đầu vào và remaining chưa quét theo API_CONTRACTS. Đếm live
+RF repair từ các Get/Store xác nhận trong lượt và node ACTIVE; không dùng cached
+VERIFIED bị timeout làm bằng chứng source. Đủ RF nhưng thiếu domain chỉ báo
+degraded, không tự thêm replica. Trước Delete corrupted replica, commit mapping
+PENDING; Storage Delete kiểm tra RPC còn active sau lấy mutex và trước unlink,
+để request đã hết hạn không xóa trễ khi lượt repair sau ghi lại chunk.
 
 ### Khi node hoặc Metadata khởi động lại
 
@@ -200,7 +215,10 @@ Lượt trả counts repaired/unavailable/no_destination/errors và remaining, k
 
 ## 9. Delete và cleanup bền vững
 
-DELETE lấy operation lock, đánh dấu file DELETING và cleanup_pending=true trên mọi replica trong một transaction **trước** RPC. File biến mất khỏi list mặc định và không thể download/repair ngay từ commit này.
+DELETE lấy operation lock, đánh dấu file DELETING và cleanup_pending=true trên
+mọi attempted replica chưa DELETED trong một transaction **trước** RPC. Replica
+đã được xác nhận DELETED giữ nguyên. File biến mất khỏi list mặc định và không
+thể download/repair ngay từ commit này.
 
 Thử Delete các node reachable. RPC idempotent: chunk không tồn tại vẫn là success. Node DOWN/timeout giữ pending. Background worker mỗi 5 giây tiếp tục pending cleanup khi lock trống, kể cả sau Metadata restart. Mỗi lượt tối đa 8 replica; retry qua các lượt không có hạn số lượt, nhưng từng RPC và từng lượt có giới hạn.
 

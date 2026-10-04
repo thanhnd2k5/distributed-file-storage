@@ -118,7 +118,7 @@ def nodes(tmp_path):
 
 
 @contextmanager
-def child_process(database, configs, directory, mode="normal"):
+def child_process(database, configs, directory, mode="normal", *, harness=HARNESS, extra_env=None):
     sessions, url = database
     schema = sessions.kw["bind"].get_execution_options()["schema_translate_map"][None]
     scoped_url = make_url(url).update_query_dict({"options": f"-csearch_path={schema}"})
@@ -140,10 +140,11 @@ def child_process(database, configs, directory, mode="normal"):
         "TEST_HTTP_PORT": str(port),
         "CRASH_WINDOW": mode,
         "PYTHONUNBUFFERED": "1",
+        **(extra_env or {}),
     }
     with (directory / (mode + "-" + uuid4().hex + ".log")).open("wb") as errors:
         child = subprocess.Popen(
-            [sys.executable, "-c", HARNESS],
+            [sys.executable, "-c", harness],
             env=environment,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

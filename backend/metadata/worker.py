@@ -8,10 +8,13 @@ from time import monotonic
 import grpc
 import storage_pb2
 import storage_pb2_grpc
-from sqlalchemy import text
+from sqlalchemy import exists, select, text
+from sqlalchemy.exc import SQLAlchemyError
 
+from metadata.cleanup import CleanupPass
 from metadata.health import HealthDetector, HealthSnapshot
-from metadata.models import StorageNode
+from metadata.models import Chunk, ChunkReplica, File, StorageNode
+from metadata.operations import OperationError, data_operation
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,15 @@ class MetadataWorker:
         self._stubs = {}
         self._executor = None
         self._thread = None
+        self.cleanup_state = None
+        self._cleanup_interval = settings.cleanup_interval_seconds
+        self._cleanup_executor = None
+        self._cleanup_pass = CleanupPass()
+
+    @property
+    def cleanup_pass(self):
+        """Shared fairness cursor; callers must hold the data-operation lock."""
+        return self._cleanup_pass
 
     @property
     def snapshots(self):
@@ -80,6 +92,10 @@ class MetadataWorker:
             self._executor = ThreadPoolExecutor(
                 max_workers=max(1, len(self.nodes)), thread_name_prefix="metadata-health"
             )
+            if self.cleanup_state is not None:
+                self._cleanup_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="metadata-cleanup"
+                )
             self._thread = Thread(target=self._run, name="metadata-poll", daemon=True)
             self._thread.start()
         except Exception:
@@ -97,6 +113,8 @@ class MetadataWorker:
                     self._thread.join()
                 if self._executor is not None:
                     self._executor.shutdown(wait=True, cancel_futures=True)
+                if self._cleanup_executor is not None:
+                    self._cleanup_executor.shutdown(wait=True, cancel_futures=True)
             finally:
                 for channel in self._channels.values():
                     channel.close()
@@ -112,6 +130,8 @@ class MetadataWorker:
     def _schedule(self):
         next_due = {node.node_id: monotonic() for node in self.nodes}
         running = {}
+        cleanup_future = None
+        cleanup_due = monotonic()
         while not self._stop.is_set():
             self._wake.clear()
             now = monotonic()
@@ -131,9 +151,49 @@ class MetadataWorker:
                     running[node_id].add_done_callback(lambda _: self._wake.set())
                     next_due[node_id] = now + self.interval
             pending_due = [due for node_id, due in next_due.items() if node_id not in running]
+            if self._cleanup_executor is not None:
+                if cleanup_future is not None and cleanup_future.done():
+                    # Unexpected task errors terminate the scheduler and fail readiness.
+                    cleanup_future.result()
+                    cleanup_future = None
+                if cleanup_future is None:
+                    if now >= cleanup_due:
+                        cleanup_future = self._cleanup_executor.submit(self._cleanup)
+                        cleanup_future.add_done_callback(lambda _: self._wake.set())
+                        cleanup_due = now + self._cleanup_interval
+                    else:
+                        pending_due.append(cleanup_due)
             timeout = max(0, min(pending_due) - monotonic()) if pending_due else self.interval
             # Finite configuration can still exceed the platform's lock timeout limit.
             self._wake.wait(min(timeout, TIMEOUT_MAX))
+
+    def _cleanup(self):
+        if self._stop.is_set() or not self.cleanup_state.initialized:
+            return
+        try:
+            # An empty housekeeping tick should not compete with user transfers.
+            # This is only a hint; the locked pass rereads the authoritative rows.
+            with self.sessions.begin() as session:
+                self._bound_transaction(session)
+                pending = exists(
+                    select(ChunkReplica.chunk_id)
+                    .join(Chunk, Chunk.id == ChunkReplica.chunk_id)
+                    .where(Chunk.file_id == File.id, ChunkReplica.cleanup_pending)
+                )
+                work = session.scalar(
+                    select(File.id)
+                    .where((File.status == "DELETING") | ((File.status == "FAILED") & pending))
+                    .limit(1)
+                )
+            if work is None or self._stop.is_set():
+                return
+            with data_operation(self.cleanup_state) as operation:
+                self.cleanup_pass.run(operation, self.cleanup_state.settings, self._stop)
+        except OperationError:
+            # Busy or startup/shutdown admission closed; retry on the next interval.
+            return
+        except SQLAlchemyError as exc:
+            self._log_failure("cleanup", exc)
 
     @staticmethod
     def _matches(node, config):

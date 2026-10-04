@@ -67,7 +67,11 @@ def standalone_operation(settings, sessions):
     client = StorageClient(settings)
     client.start()
     state = SimpleNamespace(
-        initialized=True, operation_lock=Lock(), storage_client=client, session_factory=sessions
+        initialized=True,
+        operation_lock=Lock(),
+        storage_client=client,
+        session_factory=sessions,
+        health_worker=SimpleNamespace(running=True),
     )
     try:
         yield state
@@ -122,6 +126,23 @@ def test_database_failure_rolls_back_and_releases_operation_lock(app_parts):
                 assert session.scalar(text("SELECT 1")) == 1
 
 
+def test_delete_operation_committed_scope_thread_and_lifetime_guards(app_parts):
+    settings, _, sessions = app_parts
+    with standalone_operation(settings, sessions) as state:
+        with data_operation(state) as operation:
+            with operation.transaction():
+                with pytest.raises(RuntimeError, match="before calling Storage"):
+                    operation.delete_chunk("node-1", CHUNK_ID)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                with pytest.raises(RuntimeError, match="owning thread"):
+                    executor.submit(operation.delete_chunk, "node-1", CHUNK_ID).result(timeout=2)
+            operation.store_chunk("node-1", CHUNK_ID, DATA, HASH)
+            assert operation.delete_chunk("node-1", CHUNK_ID).existed
+        with pytest.raises(RuntimeError, match="owning thread"):
+            operation.delete_chunk("node-1", CHUNK_ID)
+        assert not state.operation_lock.locked()
+
+
 def test_operation_cannot_cross_threads_or_escape_scope(app_parts):
     settings, _, sessions = app_parts
     with standalone_operation(settings, sessions) as state:
@@ -139,6 +160,7 @@ def test_operation_cannot_cross_threads_or_escape_scope(app_parts):
 def test_admission_rejects_uninitialized_missing_or_stopped_client(initialized, has_client):
     state = SimpleNamespace(
         initialized=initialized,
+        health_worker=SimpleNamespace(running=True),
         operation_lock=Lock(),
         session_factory=None,
         storage_client=SimpleNamespace(running=False) if has_client else None,
@@ -148,6 +170,50 @@ def test_admission_rejects_uninitialized_missing_or_stopped_client(initialized, 
             pytest.fail("Unavailable operation admitted")
     assert (caught.value.status_code, caught.value.code) == (503, "METADATA_UNAVAILABLE")
     assert not state.operation_lock.locked()
+
+
+@pytest.mark.parametrize("worker", [None, SimpleNamespace(running=False)])
+def test_admission_rejects_missing_or_stopped_worker_even_when_busy(worker):
+    state = SimpleNamespace(
+        initialized=True,
+        health_worker=worker,
+        storage_client=SimpleNamespace(running=True),
+        operation_lock=Lock(),
+    )
+    state.operation_lock.acquire()
+    try:
+        with pytest.raises(OperationError) as caught:
+            with data_operation(state):
+                pytest.fail("Dead scheduler admitted work")
+        assert (caught.value.status_code, caught.value.code) == (503, "METADATA_UNAVAILABLE")
+        assert state.operation_lock.locked()  # Admission did not release somebody else's lock.
+    finally:
+        state.operation_lock.release()
+
+
+def test_admission_rechecks_worker_after_acquiring_lock():
+    worker = SimpleNamespace(running=True)
+    lock = Lock()
+
+    class StoppingLock:
+        def acquire(self, *, blocking):
+            acquired = lock.acquire(blocking=blocking)
+            worker.running = False
+            return acquired
+
+        def release(self):
+            lock.release()
+
+    state = SimpleNamespace(
+        initialized=True,
+        health_worker=worker,
+        storage_client=SimpleNamespace(running=True),
+        operation_lock=StoppingLock(),
+    )
+    with pytest.raises(OperationError) as caught:
+        with data_operation(state):
+            pytest.fail("Scheduler stopped during admission")
+    assert caught.value.status_code == 503 and not lock.locked()
 
 
 def test_http_busy_envelope_health_and_reads_continue_during_real_data_rpc(app_parts, monkeypatch):

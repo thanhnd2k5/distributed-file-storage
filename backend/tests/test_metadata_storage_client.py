@@ -33,12 +33,14 @@ class FaultStorage(StorageService):
 
     def __init__(self, settings):
         super().__init__(settings)
-        self.requests = {"StoreChunk": [], "GetChunk": []}
+        self.requests = {"StoreChunk": [], "GetChunk": [], "DeleteChunk": []}
         self.deadlines = []
-        self.errors = {"StoreChunk": [], "GetChunk": []}
+        self.errors = {"StoreChunk": [], "GetChunk": [], "DeleteChunk": []}
         self.lost_ack = None
         self.store_mutation = None
         self.get_mutation = None
+        self.delete_mutation = None
+        self.delete_lost_ack = None
         self.block = False
         self.entered = Event()
         self.finished = Event()
@@ -83,6 +85,18 @@ class FaultStorage(StorageService):
         if self.get_mutation is not None:
             self.get_mutation(response)
         return response
+
+    def DeleteChunk(self, request, context):
+        try:
+            self._enter("DeleteChunk", request, context)
+            response = super().DeleteChunk(request, context)
+            if self.delete_lost_ack and len(self.requests["DeleteChunk"]) == 1:
+                context.abort(self.delete_lost_ack, "lost Delete ack")
+            if self.delete_mutation:
+                self.delete_mutation(response)
+            return response
+        finally:
+            self.finished.set()
 
 
 @pytest.fixture
@@ -472,3 +486,106 @@ def test_partial_client_start_closes_constructed_channels(monkeypatch):
     assert len(closed) == 1 and not client.running
     client.close()
     assert len(closed) == 1
+
+
+def test_delete_production_idempotency_and_node_isolation(rpc_nodes, clients):
+    first, service, directory = rpc_nodes()
+    second, _, _ = rpc_nodes("node-2")
+    client = clients([first, second])
+    client.store_chunk(first.node_id, CHUNK_ID, DATA, HASH)
+    assert not client.delete_chunk(second.node_id, CHUNK_ID).existed
+    assert client.delete_chunk(first.node_id, CHUNK_ID).existed
+    assert not client.delete_chunk(first.node_id, CHUNK_ID).existed
+    assert service.store.used_bytes == 0 and not (directory / f"{CHUNK_ID}.chunk").exists()
+
+
+@pytest.mark.parametrize("status", [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED])
+def test_delete_lost_ack_retry_is_identical_and_idempotent(rpc_nodes, clients, status):
+    config, service, _ = rpc_nodes(faults=True)
+    client = clients([config])
+    client.store_chunk(config.node_id, CHUNK_ID, DATA, HASH)
+    service.delete_lost_ack = status
+    assert not client.delete_chunk(config.node_id, CHUNK_ID).existed
+    assert len(service.requests["DeleteChunk"]) == 2
+    assert service.requests["DeleteChunk"][0] == service.requests["DeleteChunk"][1]
+    assert all(0 < deadline <= 0.6 for deadline in service.deadlines)
+
+
+@pytest.mark.parametrize("attempts", [1, 2])
+@pytest.mark.parametrize("status", [grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED])
+def test_delete_transient_retry_limit(rpc_nodes, clients, attempts, status):
+    config, service, _ = rpc_nodes(faults=True)
+    service.errors["DeleteChunk"] = [status] * 3
+    client = clients([config], rpc_max_attempts=attempts)
+    with pytest.raises(StorageRpcError) as caught:
+        client.delete_chunk(config.node_id, CHUNK_ID)
+    assert caught.value.attempts == attempts and caught.value.replica_status is None
+    assert len(service.requests["DeleteChunk"]) == attempts
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        grpc.StatusCode.INTERNAL,
+        grpc.StatusCode.FAILED_PRECONDITION,
+        grpc.StatusCode.CANCELLED,
+        grpc.StatusCode.NOT_FOUND,
+    ],
+)
+def test_delete_nontransient_and_compat_not_found(rpc_nodes, clients, status):
+    config, service, _ = rpc_nodes(faults=True)
+    service.errors["DeleteChunk"] = [status]
+    client = clients([config])
+    if status == grpc.StatusCode.NOT_FOUND:
+        assert not client.delete_chunk(config.node_id, CHUNK_ID).existed
+    else:
+        with pytest.raises(StorageRpcError) as caught:
+            client.delete_chunk(config.node_id, CHUNK_ID)
+        assert caught.value.grpc_status == status and caught.value.attempts == 1
+    assert len(service.requests["DeleteChunk"]) == 1
+
+
+def test_delete_invalid_ack_is_not_retried(rpc_nodes, clients):
+    config, service, _ = rpc_nodes(faults=True)
+    service.delete_mutation = lambda response: setattr(response, "chunk_id", str(uuid.uuid4()))
+    client = clients([config])
+    with pytest.raises(StorageRpcError) as caught:
+        client.delete_chunk(config.node_id, CHUNK_ID)
+    assert caught.value.reason == "INVALID_DELETE_ACK" and caught.value.replica_status is None
+    assert len(service.requests["DeleteChunk"]) == 1
+
+
+def test_delete_actual_deadline_and_unconfigured_node(rpc_nodes, clients):
+    config, service, _ = rpc_nodes(faults=True)
+    service.block = True
+    client = clients([config], chunk_rpc_timeout_seconds=0.06)
+    with pytest.raises(ValueError, match="not configured"):
+        client.delete_chunk("absent", CHUNK_ID)
+    with pytest.raises(StorageRpcError) as caught:
+        client.delete_chunk(config.node_id, CHUNK_ID)
+    assert caught.value.grpc_status == grpc.StatusCode.DEADLINE_EXCEEDED
+    assert caught.value.attempts == 2 and len(service.requests["DeleteChunk"]) == 2
+
+
+def test_delete_cancel_and_close_drain(rpc_nodes, clients):
+    config, service, _ = rpc_nodes(faults=True)
+    service.block = True
+    client = clients([config])
+    cancel = Event()
+    cancel.set()
+    with pytest.raises(StorageRpcError) as caught:
+        client.delete_chunk(config.node_id, CHUNK_ID, cancel=cancel)
+    assert caught.value.attempts == 0 and not service.requests["DeleteChunk"]
+    cancel.clear()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        call = executor.submit(client.delete_chunk, config.node_id, CHUNK_ID, cancel=cancel)
+        assert service.entered.wait(2)
+        closing = executor.submit(client.close)
+        wait_until(lambda: not client.running)
+        assert not closing.done()
+        cancel.set()
+        with pytest.raises(StorageRpcError) as caught:
+            call.result(timeout=2)
+        assert caught.value.cancelled and caught.value.attempts == 1
+        closing.result(timeout=2)
+    assert service.finished.wait(2) and client._active_calls == 0

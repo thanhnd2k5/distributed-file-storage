@@ -53,6 +53,12 @@ class StoreAck:
     already_existed: bool
 
 
+@dataclass(frozen=True)
+class DeleteAck:
+    chunk_id: str
+    existed: bool
+
+
 class StorageClient:
     """Own independent data channels; close drains accepted calls before closing.
 
@@ -225,3 +231,21 @@ class StorageClient:
                 "GetChunk", node_id, None, attempts, reason="INVALID_GET_RESPONSE"
             )
         return response.data
+
+    def delete_chunk(
+        self, node_id: str, chunk_id: str, *, cancel: Event | None = None
+    ) -> DeleteAck:
+        try:
+            response, attempts = self._invoke(
+                node_id, "DeleteChunk", storage_pb2.DeleteChunkRequest(chunk_id=chunk_id), cancel
+            )
+        except StorageRpcError as exc:
+            # Compatibility with servers returning NOT_FOUND instead of OK existed=false.
+            if exc.grpc_status == grpc.StatusCode.NOT_FOUND:
+                return DeleteAck(chunk_id, False)
+            raise
+        if response.chunk_id != chunk_id:
+            raise StorageRpcError(
+                "DeleteChunk", node_id, None, attempts, reason="INVALID_DELETE_ACK"
+            )
+        return DeleteAck(response.chunk_id, response.existed)

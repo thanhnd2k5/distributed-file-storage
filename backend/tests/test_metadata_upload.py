@@ -9,6 +9,7 @@ import grpc
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from health_control import pause_background
 from sqlalchemy import event, select, update
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -214,7 +215,7 @@ def test_empty_needs_no_active_nodes_and_repeated_post_creates_new_uuid(cluster)
     _, sessions, _ = cluster
     app, http = start_http(cluster)
     try:
-        app.state.health_worker.stop()
+        pause_background(app.state.health_worker)
         with sessions.begin() as session:
             session.execute(update(StorageNode).values(status="DOWN"))
         nonempty = http.post("/api/v1/files", files={"file": ("x", b"x")})
@@ -235,7 +236,7 @@ def test_pending_committed_before_every_store_with_no_coordinator_transaction(cl
     app, http = start_http(cluster)
     observed = []
     try:
-        app.state.health_worker.stop()
+        pause_background(app.state.health_worker)
         for server in servers:
             original = server.service.store_handler
 
@@ -414,7 +415,7 @@ def test_database_failure_after_store_keeps_committed_attempt_and_recovery(clust
             raise SQLAlchemyError("injected DB outage after durable Store")
 
     monkeypatch.setattr(DataOperation, "store_chunk", store_then_break_db)
-    app.state.health_worker.stop()
+    pause_background(app.state.health_worker)
     event.listen(engine, "before_cursor_execute", break_db)
     try:
         response = http.post("/api/v1/files", files={"file": ("x", b"payload")})
@@ -664,7 +665,7 @@ def test_commit_uses_file_snapshots_and_acknowledgements_despite_health_change(
 ):
     settings, sessions, _ = cluster
     app, http = start_http(cluster)
-    app.state.health_worker.stop()
+    pause_background(app.state.health_worker)
     original = DataOperation.store_chunk
     calls = 0
 
@@ -728,7 +729,7 @@ def test_final_commit_rejects_inconsistent_persisted_chunks_or_rf(cluster, monke
 def test_database_failure_before_file_creation_has_no_file_id(cluster):
     _, sessions, servers = cluster
     app, http = start_http(cluster)
-    app.state.health_worker.stop()
+    pause_background(app.state.health_worker)
     engine = sessions.kw["bind"]
 
     def unavailable(connection, cursor, statement, parameters, context, executemany):
