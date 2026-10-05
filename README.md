@@ -35,9 +35,37 @@ xác minh NOT_FOUND; giữ tombstones/history và named volumes. Baseline cuối
 P7 đã rà DoD/contracts/evidence và chốt bàn giao bằng docs-only, không rerun
 tests/deploy hay kiểm tra lại cluster live. Không coi các focused counts là
 full-suite run; frontend/hai host chưa làm. Tiếp theo **M5: UI tối thiểu**.
-Chi tiết: [bàn giao M5](docs/M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu),
-[evidence P6](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
-[evidence P7](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
+**M5 P1 hoàn thành:** client V1 không auth/token/credentials, shell public và
+starter bootstrap theo route; lint/build và 19 focused browser checks qua.
+P2 list/detail/placement/nodes/cluster hoàn thành: lint/build, 10 automated
+checks mô phỏng và các bước UI/API thật qua; đã phục hồi dev server sau crash.
+P3 upload/download hoàn thành: file 10 MiB + 17 byte và file rỗng qua UI/API
+thật, SHA-256 Blob nhận trùng nguồn; 18 checks mô phỏng qua. **P4 hoàn thành
+05/10/2026:** dialog/delete/pending/terminal qua lint/build, 14 controlled checks,
+3 P3 regressions và xóa thật ba fixture owned. Hai file nhiều chunk trả 202→read
+404; file rỗng trả 200/DELETED/pending=0. **P5 hoàn thành 05/10/2026:** manual
+repair filters/cursor/outcomes qua targeted lint/build và controlled checks;
+scan thật scoped max_chunks=2 qua ba lượt, remaining=4→2→0.
+**P6 hoàn thành 05/10/2026:** gate UI/API runtime local — fallback download/
+repair khi node-2 DOWN, offline DELETE→404, 409 OPERATION_BUSY; owned fixtures
+đã dọn; local `dev_host` không claim hai host.
+**M5 hoàn thành P1–P7 (05/10/2026).** P7 docs-only: đối chiếu DoD/source/evidence,
+chốt bàn giao M6, đồng bộ README/index; không rerun runtime/deploy.
+Chi tiết [kế hoạch M5](docs/M5_IMPLEMENTATION_PLAN.md),
+[bàn giao M6](docs/M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal)
+và [evidence P7](docs/M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026).
+Chi tiết: [evidence P1](docs/M5_IMPLEMENTATION_PLAN.md#7-evidence-p1--04102026).
+Chi tiết: [evidence P2](docs/M5_IMPLEMENTATION_PLAN.md#8-evidence-p2--04102026).
+Chi tiết: [evidence P3](docs/M5_IMPLEMENTATION_PLAN.md#9-evidence-p3--04102026).
+Chi tiết: [evidence P4](docs/M5_IMPLEMENTATION_PLAN.md#10-evidence-p4--05102026).
+Chi tiết: [evidence P5](docs/M5_IMPLEMENTATION_PLAN.md#11-evidence-p5--05102026).
+Chi tiết: [evidence P6](docs/M5_IMPLEMENTATION_PLAN.md#12-evidence-p6--05102026).
+Các fixes sau review M4 có focused regression evidence nhưng chưa deploy live
+theo ghi nhận cuối (warning bàn giao, không blocker UI local đã pass).
+Tiếp theo **M6: hai máy và rehearsal**. Handoff M4 gốc:
+[bàn giao M5](docs/M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu),
+[evidence P6 M4](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
+[evidence P7 M4](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
 
 Các ghi nhận M4 P1–P5 dưới đây là lịch sử tại thời điểm từng phase.
 

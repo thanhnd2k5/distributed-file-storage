@@ -8,6 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.npm-cache/
 dist
 dist-ssr
 *.local
@@ -23,3 +24,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Local M5 gate HTML entries (evidence stays under ignored .runtime/)
+/m5-*-live.html
+/m5-*-checks.html

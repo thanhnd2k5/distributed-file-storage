@@ -345,6 +345,10 @@ checkbox từ kế hoạch hoặc lint/build. Giữ ghi chú M3 fixture đến k
 
 ## 12. Bàn giao M5 — UI tối thiểu
 
+Kế hoạch triển khai tiếp theo: [M5 — UI tối thiểu, P1–P7](M5_IMPLEMENTATION_PLAN.md)
+(lập 04/10/2026, P1 đã hoàn thành; evidence hiện hành nằm trong plan M5). Các ghi nhận P7 bên
+dưới vẫn là lịch sử tại thời điểm bàn giao M4.
+
 ### DoD M4 đã đối chiếu
 
 | Điều kiện | Implementation | Evidence đã có |

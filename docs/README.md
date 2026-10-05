@@ -16,10 +16,33 @@ P1–P6. [M3 — Upload/download RF=2](M3_IMPLEMENTATION_PLAN.md) đã hoàn th�
 P1–P7 ngày 04/10/2026; Metadata M3 deploy local, lifecycle/crash và smoke RF=2
 thật đã qua. [M4 — failure/DELETE/cleanup/repair](M4_IMPLEMENTATION_PLAN.md)
 hoàn thành P1–P7; build local/repair/delete smoke đã qua và fixtures đã dọn đúng
-ownership. Tiếp theo **M5 UI tối thiểu**; xem
+ownership. [M5 — UI tối thiểu](M5_IMPLEMENTATION_PLAN.md) đã hoàn thành P1–P7
+ngày 05/10/2026; tiếp theo **M6 hai máy và rehearsal**. **P1 hoàn thành**: client V1/
+public shell, lint/build và 19 focused browser checks qua. **P2 hoàn thành**:
+lint/build, 10 automated checks mô phỏng cùng UI/API thật và gate sau phục hồi
+qua. **P3 hoàn thành**: upload/download file nhiều chunk và rỗng qua UI/API
+thật, SHA-256 Blob trùng nguồn; 18 controlled checks qua. **P4 hoàn thành
+05/10/2026:** lint/build, 14 controlled checks/3 selected P3 regressions qua;
+delete thật ba fixture P3 với 202→read 404/200 zero pending. **P5 hoàn thành
+05/10/2026:** manual repair filters/cursor/outcomes qua targeted lint/build,
+controlled checks và scan scoped thật ba lượt max_chunks=2, remaining=4→2→0.
+**P6 hoàn thành 05/10/2026:** gate UI/API runtime local — fallback download/
+repair khi node-2 DOWN, offline DELETE→404, 409 OPERATION_BUSY; owned fixtures
+đã dọn; không claim hai host.
+**M5 hoàn thành P1–P7 (05/10/2026).** P7 docs-only đối chiếu DoD và chốt
+[bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal);
+tiếp theo **M6 hai máy và rehearsal**.
+Chi tiết [evidence P1](M5_IMPLEMENTATION_PLAN.md#7-evidence-p1--04102026).
+Chi tiết: [evidence P2](M5_IMPLEMENTATION_PLAN.md#8-evidence-p2--04102026).
+Chi tiết: [evidence P3](M5_IMPLEMENTATION_PLAN.md#9-evidence-p3--04102026).
+Chi tiết: [evidence P4](M5_IMPLEMENTATION_PLAN.md#10-evidence-p4--05102026).
+Chi tiết: [evidence P5](M5_IMPLEMENTATION_PLAN.md#11-evidence-p5--05102026).
+Chi tiết: [evidence P6](M5_IMPLEMENTATION_PLAN.md#12-evidence-p6--05102026).
+Chi tiết: [evidence P7](M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026).
+Handoff M4 gốc:
 [bàn giao M5](M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu),
-[evidence P6](M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
-[evidence P7](M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
+[evidence P6 M4](M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
+[evidence P7 M4](M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
 
 ## Quyết định mới so với bản V2 trước
 
@@ -51,7 +74,8 @@ Lựa chọn tên helper, tách file Python hay refactor nội bộ được t�
 
 Việc compile proto không chứng minh upload, failover hay repair đã hoạt động.
 Evidence implementation M0–M3 và ranh giới chưa làm nằm ở phần tiến độ bên dưới;
-M4–M6 chỉ hoàn thành khi có code và kiểm tra thật theo gate của từng milestone.
+M4 đã hoàn thành theo evidence riêng; M5–M6 chỉ hoàn thành khi có code và
+kiểm tra thật theo gate của từng milestone.
 
 ## Tiến độ implementation — 04/10/2026
 
