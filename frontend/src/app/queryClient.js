@@ -1,4 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
+import { storageKeys } from "api/storage/queryKeys";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -8,3 +9,5 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+queryClient.setMutationDefaults(storageKeys.all, { retry: false });

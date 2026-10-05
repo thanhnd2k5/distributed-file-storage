@@ -119,7 +119,7 @@ checks passed, 15 deselected; Ruff 2 paths qua. Tại thời điểm review chư
 fix hoặc rerun live smoke/full suite; fixes được deploy ở M4 P6. Xem
 [evidence review M3](M3_IMPLEMENTATION_PLAN.md#review-bổ-sung-m3--04102026).
 
-**Milestone tiếp theo: M4 failure/DELETE/cleanup/repair.** Bổ sung Metadata
+**Bàn giao lịch sử M3 sang M4 failure/DELETE/cleanup/repair:** bổ sung Metadata
 Delete RPC wrapper/coordinator, tombstone bền vững, cleanup bounded khi node
 offline và repair theo RF snapshot/cursor/budget. Dùng lại data lock/transaction
 boundary; fallback download không thay repair. Một AVAILABLE fixture P6 có 6
@@ -167,6 +167,52 @@ adapter error envelope, routes không login guard, mutation/cursor/pending UX
 đúng contract; chưa triển khai các thay đổi này ở P7. Chi tiết
 [bàn giao M5](M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu) và
 [evidence P7](M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
+
+**M5 P1–P3 hoàn thành ngày 04/10/2026.**
+**P4 hoàn thành ngày 05/10/2026.**
+Chi tiết [M5 — UI tối thiểu, P1–P7](M5_IMPLEMENTATION_PLAN.md): P1 client/shell
+public → P2 snapshots/list/detail/cluster → P3 upload/download → P4 delete/
+pending cleanup → P5 manual repair → P6 UI/API runtime/failure flows → P7 DoD/
+bàn giao M6. Giữ hai màn hình và stack starter; 2 buổi là mục tiêu happy path,
+dự trù 3–4 buổi + buffer cho integration/cursor/pending và evidence. Các fixes
+sau review M4 đã có focused tests nhưng chưa deploy live theo evidence cuối;
+đối chiếu build trước gate UI thật. P1 đã có client không auth/token/credentials,
+shell public và scoped starter bootstrap; targeted ESLint/build qua, 19 browser
+checks (API thật và adapter mô phỏng phân biệt rõ) cùng public deep-link/starter
+guard regression qua. Live Metadata vẫn build P6; P1 chỉ GET, không deploy/
+fault smoke hoặc file mutation thật. Xem [evidence P1](M5_IMPLEMENTATION_PLAN.md#7-evidence-p1--04102026).
+P2 list/detail/placement/nodes/cluster hoàn thành: targeted lint/build qua,
+10 automated checks mô phỏng được quan sát passed, UI GET thật và unmount/
+live 404/invalid route/reload sau phục hồi qua. Static layout fix được kiểm
+tra trực quan trong sidebar hẹp. Xem [evidence P2](M5_IMPLEMENTATION_PLAN.md#8-evidence-p2--04102026).
+P3 upload/download qua targeted lint/build, 18 controlled checks và flow UI/API
+thật cho 10 MiB + 17 byte/file rỗng: SHA-256 Blob download trùng nguồn, filename
+Unicode đúng. IAB không trả download event; không có evidence file trên đĩa,
+đã xác minh bytes nhận trong browser và anchor save dispatch. Xem
+[evidence P3](M5_IMPLEMENTATION_PLAN.md#9-evidence-p3--04102026).
+P4 dialog/delete/pending/terminal qua lint/build, 14 controlled checks và 3 P3
+regressions chọn lọc. User xác nhận xóa ba fixture P3: hai file nhiều chunk
+202/DELETING/pending=4→GET 404, file rỗng 200/DELETED/pending=0; mỗi ID đúng một
+DELETE, terminal dừng poll, inactive/cache cập nhật, file ngoài ownership giữ
+nguyên. Read 404 không là disk cleanup proof riêng; offline/recovery thật thuộc
+P6. Xem [evidence P4](M5_IMPLEMENTATION_PLAN.md#10-evidence-p4--05102026).
+P5 manual repair hoàn thành 05/10/2026: filter/root/detail, manual cursor pages,
+zero-progress, partial outcomes và timeout/reconcile qua targeted lint/build,
+18 controlled checks khác nhau cùng các bước UI trực tiếp. Scan thật scoped
+max_chunks=2 ba lượt, checked=2/2/2, remaining=4/2/0, repaired=0; không suy ra
+RF recovery từ HEALTHY. Fixture P5 giữ cho gate P6. Xem
+[evidence P5](M5_IMPLEMENTATION_PLAN.md#11-evidence-p5--05102026).
+P6 UI/API runtime hoàn thành 05/10/2026: stop/start `storage-node-2` với UI —
+fallback download SHA khớp, repair Store ack 4/remaining=0 khi DOWN rồi
+over_replicated=4 sau recovery, offline DELETE 202/pending→404, 409
+OPERATION_BUSY hiện đúng; owned fixtures dọn; local `dev_host` không claim hai
+host. Xem [evidence P6](M5_IMPLEMENTATION_PLAN.md#12-evidence-p6--05102026).
+**M5 hoàn thành P1–P7 ngày 05/10/2026.** P7 docs-only: đối chiếu DoD/source/
+evidence, chốt [bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal),
+đồng bộ README/index; không rerun runtime/deploy. Xem
+[evidence P7](M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026).
+Tiếp theo **M6 hai máy và rehearsal** (Compose A/B, LAN/CORS, failure-domain
+demo); chưa lập phase plan M6 trong lượt P7.
 
 ## 3. Kiểm tra có ý nghĩa
 

@@ -3,6 +3,7 @@ import { createBrowserRouter } from "react-router";
 
 // Local Imports
 import Root from "app/layouts/Root";
+import StarterLayout from "app/layouts/StarterLayout";
 import RootErrorBoundary from "app/pages/errors/RootErrorBoundary";
 import { SplashScreen } from "components/template/SplashScreen";
 import { protectedRoutes } from "./protected";
@@ -17,7 +18,14 @@ const router = createBrowserRouter([
     Component: Root,
     hydrateFallbackElement: <SplashScreen />,
     ErrorBoundary: RootErrorBoundary,
-    children: [protectedRoutes, ghostRoutes, publicRoutes],
+    children: [
+      publicRoutes,
+      {
+        id: "starter",
+        Component: StarterLayout,
+        children: [protectedRoutes, ghostRoutes],
+      },
+    ],
   },
 ]);
 

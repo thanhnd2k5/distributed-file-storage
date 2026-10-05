@@ -17,10 +17,6 @@ const protectedRoutes = {
       Component: DynamicLayout,
       children: [
         {
-          index: true,
-          element: <Navigate to="/dashboards" />,
-        },
-        {
           path: "dashboards",
           children: [
             {
