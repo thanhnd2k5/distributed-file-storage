@@ -5,6 +5,7 @@ import {
   DialogPanel,
   DialogTitle,
 } from "@headlessui/react";
+import { TrashIcon } from "@heroicons/react/24/outline";
 import { Button } from "components/ui/Button";
 import { useTransfer } from "../hooks/useTransfer";
 import { canDeleteFile } from "../utils/deletions";
@@ -20,30 +21,22 @@ export default function DeletePanel({ file, connection, notFound, readError }) {
     connection.canMutate &&
     !transfer.busy &&
     !transfer.needsReconcile;
+
   return (
     <>
       {available && (
-        <section
-          aria-label="Xóa file"
-          className="dark:border-dark-600 dark:bg-dark-800 mt-6 rounded-xl border border-gray-200 bg-white p-5"
+        <Button
+          color="error"
+          variant="outlined"
+          className="gap-2"
+          disabled={!enabled}
+          onClick={() =>
+            setTarget({ fileId: file.file_id, name: file.original_name })
+          }
         >
-          <h2 className="text-lg font-semibold">Xóa file</h2>
-          <Button
-            color="error"
-            variant="outlined"
-            className="mt-4"
-            disabled={!enabled}
-            onClick={() =>
-              setTarget({ fileId: file.file_id, name: file.original_name })
-            }
-          >
-            Xóa file
-          </Button>
-          <p className="mt-2 text-sm">
-            File sẽ bị ẩn khỏi danh sách và không thể tải xuống. Các bản sao có
-            thể cần thêm thời gian để dọn.
-          </p>
-        </section>
+          <TrashIcon className="size-4" />
+          Xóa
+        </Button>
       )}
       <Dialog
         open={Boolean(target)}
@@ -58,11 +51,14 @@ export default function DeletePanel({ file, connection, notFound, readError }) {
               Xóa file?
             </DialogTitle>
             <DialogDescription className="mt-3 break-all">
-              Xác nhận xóa “{target?.name}”. Thao tác không thể hoàn tác.
+              Xác nhận xóa “{target?.name}”. Thao tác không thể hoàn tác. File sẽ
+              bị ẩn khỏi danh sách và không thể tải xuống.
             </DialogDescription>
-            <p className="mt-2 text-xs break-all">ID: {target?.fileId}</p>
+            <p className="dark:text-dark-300 mt-2 text-xs break-all text-gray-500">
+              ID: {target?.fileId}
+            </p>
             {!enabled && (
-              <p role="alert" className="mt-3 text-sm">
+              <p role="alert" className="mt-3 text-sm text-amber-700 dark:text-amber-400">
                 Trạng thái hoặc kết nối đã thay đổi. Đóng hộp thoại và đọc lại
                 file.
               </p>

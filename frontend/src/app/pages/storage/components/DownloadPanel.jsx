@@ -1,37 +1,38 @@
+import { ArrowDownTrayIcon } from "@heroicons/react/24/outline";
 import { Button } from "components/ui/Button";
 import { useTransfer } from "../hooks/useTransfer";
 
 export default function DownloadPanel({ file, connection, notFound }) {
   const transfer = useTransfer();
   const available = !notFound && file?.status === "AVAILABLE";
+  const disabled =
+    !available ||
+    !connection.canMutate ||
+    transfer.busy ||
+    transfer.needsReconcile;
+
   return (
-    <section
-      aria-label="Tải xuống file"
-      className="dark:border-dark-600 dark:bg-dark-800 mt-6 rounded-xl border border-gray-200 bg-white p-5"
-    >
-      <h2 className="text-lg font-semibold">Tải xuống file</h2>
+    <div className="flex flex-wrap items-center gap-2">
       <Button
-        className="mt-4"
-        disabled={
-          !available ||
-          !connection.canMutate ||
-          transfer.busy ||
-          transfer.needsReconcile
-        }
+        className="gap-2"
+        disabled={disabled}
         onClick={() =>
           void transfer.download(file, { canMutate: connection.canMutate })
         }
       >
+        <ArrowDownTrayIcon className="size-4" />
         Tải xuống
       </Button>
       {!available && (
-        <p className="mt-2 text-sm">Chỉ tải xuống file AVAILABLE.</p>
-      )}
-      {available && !connection.canMutate && (
-        <p className="mt-2 text-sm">
-          Chờ Metadata sẵn sàng và operation lock trống để tải xuống.
+        <p className="dark:text-dark-300 text-sm text-gray-500">
+          Chỉ tải xuống file AVAILABLE
         </p>
       )}
-    </section>
+      {available && !connection.canMutate && (
+        <p className="dark:text-dark-300 text-sm text-gray-500">
+          Đang chờ Metadata sẵn sàng…
+        </p>
+      )}
+    </div>
   );
 }
