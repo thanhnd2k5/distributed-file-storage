@@ -30,8 +30,9 @@ controlled checks và scan scoped thật ba lượt max_chunks=2, remaining=4→
 repair khi node-2 DOWN, offline DELETE→404, 409 OPERATION_BUSY; owned fixtures
 đã dọn; không claim hai host.
 **M5 hoàn thành P1–P7 (05/10/2026).** P7 docs-only đối chiếu DoD và chốt
-[bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal);
-tiếp theo **M6 hai máy và rehearsal**.
+[bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal).
+**M6** đang làm: [M6 — Hai máy và rehearsal](M6_IMPLEMENTATION_PLAN.md); **P1–P2
+hoàn thành 05/10/2026** (Compose A/B + preflight script); P3–P4 khi ngồi chung.
 Chi tiết [evidence P1](M5_IMPLEMENTATION_PLAN.md#7-evidence-p1--04102026).
 Chi tiết: [evidence P2](M5_IMPLEMENTATION_PLAN.md#8-evidence-p2--04102026).
 Chi tiết: [evidence P3](M5_IMPLEMENTATION_PLAN.md#9-evidence-p3--04102026).

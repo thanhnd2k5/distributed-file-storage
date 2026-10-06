@@ -11,6 +11,12 @@ const publicRoutes = {
       }),
     },
     {
+      path: "cluster",
+      lazy: async () => ({
+        Component: (await import("app/pages/storage/cluster")).default,
+      }),
+    },
+    {
       path: "files/:fileId",
       lazy: async () => ({
         Component: (await import("app/pages/storage/detail")).default,

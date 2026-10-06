@@ -1,48 +1,97 @@
+import { useCallback, useState } from "react";
+import { useDropzone } from "react-dropzone";
+import { ArrowPathIcon, CloudArrowUpIcon } from "@heroicons/react/24/outline";
+import clsx from "clsx";
 import { Button } from "components/ui/Button";
 import { useDocumentTitle } from "hooks/useDocumentTitle";
 import { useFilesPage } from "./hooks/useFilesPage";
-import MetadataStatus from "./components/MetadataStatus";
+import { useTransfer } from "./hooks/useTransfer";
 import FilesPanel from "./components/FilesPanel";
-import ClusterPanel from "./components/ClusterPanel";
-import NodesPanel from "./components/NodesPanel";
 import UploadPanel from "./components/UploadPanel";
-import TransferNotice from "./components/TransferNotice";
-import RepairPanel from "./components/RepairPanel";
 
 export default function StoragePage() {
   useDocumentTitle("Lưu trữ file — Distributed File Storage");
   const page = useFilesPage();
+  const transfer = useTransfer();
+  const [file, setFile] = useState(null);
+  const blocked =
+    transfer.busy ||
+    transfer.needsReconcile ||
+    !page.connection.canMutate;
+
+  const onDrop = useCallback(
+    (accepted) => {
+      if (blocked || !accepted?.[0]) return;
+      setFile(accepted[0]);
+    },
+    [blocked],
+  );
+
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
+    onDrop,
+    multiple: false,
+    noClick: true,
+    noKeyboard: true,
+    disabled: blocked,
+  });
+
   return (
-    <>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Lưu trữ file</h1>
+    <div
+      className="dark:bg-dark-900/40 relative min-h-[70vh] rounded-2xl bg-white px-4 py-6 shadow-sm sm:px-6 dark:shadow-none"
+      {...getRootProps()}
+    >
+      <input {...getInputProps()} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-gray-900 dark:text-dark-50">
+            File của tôi
+          </h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-dark-300">
+            Quản lý file trên cụm lưu trữ phân tán
+          </p>
+        </div>
         <Button
           variant="outlined"
-          onClick={page.refresh}
+          className="gap-2"
+          onClick={(event) => {
+            event.stopPropagation();
+            page.refresh();
+          }}
           disabled={page.fetching}
         >
-          Làm mới dữ liệu
+          <ArrowPathIcon
+            className={`size-4 ${page.fetching ? "animate-spin" : ""}`}
+          />
+          Làm mới
         </Button>
       </div>
-      <p className="dark:text-dark-200 mt-2 text-gray-600">
-        File và tình trạng cụm lưu trữ. Snapshot được cập nhật mỗi 4 giây khi
-        trang đang hiển thị.
-      </p>
-      <MetadataStatus
-        ready={page.connection.ready}
-        cluster={page.connection.cluster}
+      <UploadPanel
+        connection={page.connection}
+        file={file}
+        setFile={setFile}
+        openPicker={open}
+        blocked={blocked}
       />
-      <UploadPanel connection={page.connection} />
-      <TransferNotice />
       <FilesPanel
         query={page.files}
         params={page.params}
         setFilter={page.setFilter}
         setOffset={page.setOffset}
       />
-      <ClusterPanel query={page.connection.cluster} />
-      <NodesPanel query={page.connection.nodes} />
-      <RepairPanel connection={page.connection} />
-    </>
+      <div
+        className={clsx(
+          "pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed transition-opacity",
+          isDragActive && !blocked
+            ? "border-primary-500 bg-primary-50/95 opacity-100 dark:border-primary-400 dark:bg-dark-900/95"
+            : "opacity-0",
+        )}
+        aria-hidden={!isDragActive}
+      >
+        <div className="flex flex-col items-center gap-2 text-primary-700 dark:text-primary-300">
+          <CloudArrowUpIcon className="size-12" />
+          <p className="text-base font-medium">Thả file để tải lên</p>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -927,8 +927,10 @@ M6 như AVAILABLE bắt buộc; M6 tạo fixture mới theo ownership riêng.
 
 ### UI đã có và semantics giữ
 
-Hai màn hình public: `/` và `/files/:fileId`. Client `VITE_STORAGE_API_URL`
+Ba route public: `/` (files), `/cluster` (nodes/repair cụm), `/files/:fileId`
+(detail/placement/repair file). Client `VITE_STORAGE_API_URL`
 (mặc định `http://localhost:8000/api/v1`), `withCredentials=false`, không Bearer.
+Nav Files/Cụm và `TransferNotice` nằm trong `StorageLayout`.
 Chi tiết chạy local: [frontend/README.md](../frontend/README.md).
 
 | Luồng | Hành vi đã triển khai |
@@ -992,4 +994,5 @@ links/headings đối chiếu với files có thật. Không có runtime asserti
 chạy runtime checks.
 
 **M5 hoàn thành P1–P7. Milestone tiếp theo M6 — hai máy và rehearsal**, dùng
-bàn giao mục 13. Chưa lập phase plan M6 trong lượt P7.
+bàn giao mục 13. Phase plan M6: [M6_IMPLEMENTATION_PLAN.md](M6_IMPLEMENTATION_PLAN.md)
+(P1 Compose/env đã có 05/10/2026).

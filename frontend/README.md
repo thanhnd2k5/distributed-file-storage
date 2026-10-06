@@ -25,10 +25,17 @@ Backend setup/prerequisites nằm trong [README repo](../README.md).
 
 ## Routes và client
 
-Storage `/` và `/files/:fileId` là public, không gọi auth initialization/getMe
-và không gửi token/cookies. Auth bootstrap của starter chỉ mount trong nhánh
-login/dashboard/settings. Storage dùng client riêng trong `src/api/storage/`,
-không dùng `api/rootApi.js` hoặc media/S3 helper của starter.
+Storage `/`, `/cluster` và `/files/:fileId` là public, không gọi auth
+initialization/getMe và không gửi token/cookies. Auth bootstrap của starter chỉ
+mount trong nhánh login/dashboard/settings. Storage dùng client riêng trong
+`src/api/storage/`, không dùng `api/rootApi.js` hoặc media/S3 helper của starter.
+
+- `/` — upload và danh sách file
+- `/cluster` — tình trạng cụm, nodes và repair toàn cụm
+- `/files/:fileId` — chi tiết, placement và repair theo file
+
+Nav Files / Cụm nằm trong `StorageLayout`; `TransferNotice` ở layout để giữ
+tiến trình khi đổi trang.
 
 P1 có shell/client public. P2 đã nối list/paging/inactive filter, detail/
 placement và nodes/cluster bằng GET; gate đã hoàn thành, gồm reload/404/unmount

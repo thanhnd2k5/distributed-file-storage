@@ -17,7 +17,7 @@ export function useFilesPage() {
     queryKey: storageKeys.list(params),
     queryFn: ({ signal }) => listFiles(params, { signal }),
   });
-  const connection = useStorageConnection();
+  const connection = useStorageConnection({ includeNodes: false });
   useEffect(() => {
     if (transferState.reconciled && transferState.kind === "upload")
       setParams((previous) => ({
@@ -51,7 +51,6 @@ export function useFilesPage() {
     fetching:
       files.isFetching ||
       connection.ready.isFetching ||
-      connection.cluster.isFetching ||
-      connection.nodes.isFetching,
+      connection.cluster.isFetching,
   };
 }

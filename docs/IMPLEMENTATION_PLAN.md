@@ -212,7 +212,10 @@ evidence, chốt [bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-m
 đồng bộ README/index; không rerun runtime/deploy. Xem
 [evidence P7](M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026).
 Tiếp theo **M6 hai máy và rehearsal** (Compose A/B, LAN/CORS, failure-domain
-demo); chưa lập phase plan M6 trong lượt P7.
+demo). Kế hoạch chi tiết: [M6_IMPLEMENTATION_PLAN.md](M6_IMPLEMENTATION_PLAN.md).
+**P1–P2 hoàn thành 05/10/2026:** Compose A/B + env examples +
+`deploy/preflight-m6.ps1` (Check/B qua); chưa claim bring-up/rehearsal hai host
+(P3–P4 khi ngồi chung).
 
 ## 3. Kiểm tra có ý nghĩa
 
