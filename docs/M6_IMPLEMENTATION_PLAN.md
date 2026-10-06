@@ -1,8 +1,8 @@
 # M6 — Hai máy và rehearsal
 
 **Ngày lập:** 05/10/2026  
-**Trạng thái:** P1–P2 hoàn thành 05/10/2026 (Compose/env + preflight script);
-P3–P4 bring-up/rehearsal hai host khi ngồi chung.  
+**Trạng thái:** P1–P5 hoàn thành 06/10/2026. Bring-up + rehearsal hai host LAN
+(commit `fa1c52b`, `MACHINE_B_HOST=172.16.11.255`) đã qua; docs/evidence khớp.  
 **Đầu vào:** M5 hoàn thành P1–P7; [bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal).  
 **Đầu ra:** cùng code/build chạy trên hai host LAN; ngắt B vẫn đọc khi còn replica trên A;
 repair khi còn đủ destination; setup/demo guide khớp lệnh thật.
@@ -50,7 +50,7 @@ P3–P4 cần hai máy cùng LAN; P5 chốt docs/evidence.
 
 Ước lượng: P1–P2 ≈ 1 buổi chuẩn bị; P3–P4 ≈ 1 buổi ngồi chung; P5 ngắn.
 
-### P1 — Compose A/B và env (đang làm / hoàn thành khi config qua)
+### P1 — Compose A/B và env (hoàn thành)
 
 1. `deploy/compose.machine-a.yml`: postgres + metadata + node-1; domain `machine_A`.
 2. `deploy/compose.machine-b.yml`: node-2 + node-3; domain `machine_B`; bind `0.0.0.0`.
@@ -134,7 +134,7 @@ npm run dev -- --host localhost --port 5173 --strictPort
 Gate P3: ready 200; 3 node ACTIVE; `active_failure_domains` / configured hiện 2 domain
 (hoặc UI Cluster panel tương đương).
 
-### P4 — Rehearsal checklist (mai ngồi chung)
+### P4 — Rehearsal checklist
 
 Làm đúng thứ tự; mỗi bước ghi pass/fail + quan sát UI/API.
 
@@ -157,9 +157,9 @@ Cập nhật README lệnh hai máy, evidence P3–P4 thật, phân biệt M5 lo
 
 - [x] P1: Compose A/B + env examples; `compose config` qua (05/10/2026)
 - [x] P2: preflight script + checklist; Check role qua (05/10/2026); IP/firewall/probe LAN khi ngồi chung
-- [ ] P3: bring-up hai host, 3 ACTIVE, 2 failure domains
-- [ ] P4: R1–R4 rehearsal pass với quan sát ghi lại
-- [ ] P5: README/docs/evidence khớp; không suy ra từ local-only
+- [x] P3: bring-up hai host, 3 ACTIVE, 2 failure domains (06/10/2026)
+- [x] P4: R1–R4 rehearsal pass với quan sát ghi lại (06/10/2026)
+- [x] P5: README/docs/evidence khớp; không suy ra từ local-only (06/10/2026)
 
 ## 4. Evidence P1 — 05/10/2026
 
@@ -184,8 +184,8 @@ docker compose --env-file deploy/.env.machine-b.example -f deploy/compose.machin
 Cả hai exit 0. Interpolate kiểm tra: `MACHINE_B_HOST` → host node-2/3;
 `failure_domain` `machine_A` / `machine_B`; CORS `http://localhost:5173`.
 
-**Cố ý chưa chạy:** `up` hai máy, port/firewall LAN, upload/repair cross-host,
-UI rehearsal. Việc đó là P3–P4 khi ngồi chung.
+**Cố ý chưa chạy (tại P1):** `up` hai máy, port/firewall LAN, upload/repair
+cross-host, UI rehearsal — đã chạy ở P3–P4 ngày 06/10/2026.
 
 ## 5. Evidence P2 — 05/10/2026
 
@@ -207,26 +207,74 @@ IPv4 LAN trên host hiện tại. Role B: tạo `deploy/.env.machine-b` nếu th
 compose config machine-b qua, in IP candidates; chưa `-EnsureFirewall` /
 `-ProbePorts` (cần Admin + máy B thật khi ngồi chung).
 
-**Cố ý chưa chạy:** Role A với IP B thật, firewall Admin, ProbePorts, compose up
-hai host, rehearsal R1–R4.
+**Cố ý chưa chạy (tại P2):** Role A với IP B thật, firewall Admin, ProbePorts,
+compose up hai host, rehearsal R1–R4 — đã chạy ở P3–P4 ngày 06/10/2026.
 
-## 6. Cheat-sheet mang đi mai
+## 6. Evidence P3 — 06/10/2026
 
-### Trước khi gặp nhau (5 phút)
+**Tier:** focused integration hai host thật (Compose A/B LAN), không claim UI
+Vite trong gate này; verify qua REST ready/cluster/nodes.
+
+**Môi trường:** commit `fa1c52b` trên cả hai máy; Máy A Wi‑Fi `172.16.12.15`
+(mask `/21`); Máy B `MACHINE_B_HOST=172.16.11.255`. Trước up A: dừng stack
+local `compose.local` vì chiếm `127.0.0.1:50051` / `:8000`.
+
+**Commands (rút gọn):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/preflight-m6.ps1 -Role A -MachineBHost 172.16.11.255 -ProbePorts
+# OK  172.16.11.255:50052 / :50053 reachable
+docker compose --env-file deploy/.env.machine-a -f deploy/compose.machine-a.yml up -d --wait --no-build
+curl.exe --fail-with-body http://localhost:8000/api/v1/health/ready
+curl.exe --fail-with-body http://localhost:8000/api/v1/cluster
+curl.exe --fail-with-body http://localhost:8000/api/v1/nodes
+```
+
+**Quan sát gate:** `ready` → `READY`; nodes `active:3`;
+`configured_failure_domains:2`, `active_failure_domains:2`; node-1
+`machine_A`, node-2/3 host `172.16.11.255` `machine_B`, cả ba `ACTIVE`.
+
+**Khác M5 local:** Compose local một `dev_host` (process failure only) không
+thay bằng bằng chứng này. P3 chỉ claim topology hai domain LAN thật.
+
+## 7. Evidence P4 — 06/10/2026
+
+**Tier:** focused rehearsal R1–R4 trên cùng bring-up P3 (API trên Máy A;
+stop/start container trên Máy B do đối tác).
+
+| # | Thao tác | Quan sát |
+|---|---|---|
+| R1 | Upload 6 MiB `POST /files` | `file_id=59744f5e-…`, 3 chunks RF=2; mỗi chunk `live_failure_domain_count=2` (`machine_A`+`machine_B`) |
+| R2 | B: `compose … stop` cả stack | node-2/3 `DOWN`; download SHA-256 khớp nguồn từ replica node-1; `under_replicated_chunks:3` |
+| R3 | B start lại; `stop storage-node-2` | node-2 `DOWN`, node-3 `ACTIVE`; `POST /admin/repair` scoped `file_id`+`node_id=node-2`: `repaired_replicas:1`, `outcome=REPAIRED` → chunk 0 có VERIFIED trên node-3; `under_replicated=0` |
+| R4 | B: `start storage-node-2` | 3 node `ACTIVE`; chunk 0 `live=3` / `over_replicated=true` (giữ, không prune); download SHA vẫn khớp |
+
+Không claim: tắt cả B rồi repair đủ RF=2 (không có destination); auto-repair;
+UI Vite trong lượt này (REST đủ gate).
+
+## 8. Evidence P5 — 06/10/2026
+
+**Tier:** no-execution docs. Cập nhật plan này, [README](../README.md) mục Demo
+hai máy, [docs/README](README.md) trạng thái M6. Phân biệt rõ M5 `dev_host`
+local vs M6 `machine_A`/`machine_B` LAN.
+
+## 9. Cheat-sheet mang đi
+
+### Preflight
 
 1. Hai máy `git pull` / cùng commit (đối chiếu short SHA từ preflight).
 2. Docker Desktop Linux containers chạy.
 3. Cùng mạng; B chạy `preflight-m6.ps1 -Role B` và gửi IPv4.
-4. A chạy `preflight-m6.ps1 -Role A -MachineBHost <IP>`.
+4. A chạy `preflight-m6.ps1 -Role A -MachineBHost <IP>` rồi `-ProbePorts` sau khi B up.
 
-### Thứ tự start (10 phút)
+### Thứ tự start
 
 1. B: `-EnsureFirewall` (Admin) nếu cần → compose machine-b up  
 2. A: `-ProbePorts` → compose machine-a up → ready + nodes  
-3. A: Vite 5173  
+3. A: Vite 5173 (tuỳ chọn demo UI)  
 4. Cluster: 3 ACTIVE, 2 failure domains
 
-### Demo nói gì (2 phút)
+### Demo nói gì
 
 1. Client chỉ nói REST với Metadata — location transparency.  
 2. Chunk RF=2, ưu tiên khác domain.  

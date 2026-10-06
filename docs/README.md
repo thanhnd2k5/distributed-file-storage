@@ -17,7 +17,7 @@ P1–P7 ngày 04/10/2026; Metadata M3 deploy local, lifecycle/crash và smoke RF
 thật đã qua. [M4 — failure/DELETE/cleanup/repair](M4_IMPLEMENTATION_PLAN.md)
 hoàn thành P1–P7; build local/repair/delete smoke đã qua và fixtures đã dọn đúng
 ownership. [M5 — UI tối thiểu](M5_IMPLEMENTATION_PLAN.md) đã hoàn thành P1–P7
-ngày 05/10/2026; tiếp theo **M6 hai máy và rehearsal**. **P1 hoàn thành**: client V1/
+ngày 05/10/2026. **P1 hoàn thành**: client V1/
 public shell, lint/build và 19 focused browser checks qua. **P2 hoàn thành**:
 lint/build, 10 automated checks mô phỏng cùng UI/API thật và gate sau phục hồi
 qua. **P3 hoàn thành**: upload/download file nhiều chunk và rỗng qua UI/API
@@ -31,8 +31,13 @@ repair khi node-2 DOWN, offline DELETE→404, 409 OPERATION_BUSY; owned fixtures
 đã dọn; không claim hai host.
 **M5 hoàn thành P1–P7 (05/10/2026).** P7 docs-only đối chiếu DoD và chốt
 [bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal).
-**M6** đang làm: [M6 — Hai máy và rehearsal](M6_IMPLEMENTATION_PLAN.md); **P1–P2
-hoàn thành 05/10/2026** (Compose A/B + preflight script); P3–P4 khi ngồi chung.
+**M6 hoàn thành P1–P5 (06/10/2026):** [M6 — Hai máy và rehearsal](M6_IMPLEMENTATION_PLAN.md)
+— Compose A/B, preflight, bring-up LAN 3 ACTIVE / 2 domain, rehearsal R1–R4
+(tắt B vẫn đọc; repair scoped; OVER_REPLICATED giữ). Không suy từ M5
+`dev_host` local. Chi tiết
+[evidence P3](M6_IMPLEMENTATION_PLAN.md#6-evidence-p3--06102026),
+[evidence P4](M6_IMPLEMENTATION_PLAN.md#7-evidence-p4--06102026),
+[evidence P5](M6_IMPLEMENTATION_PLAN.md#8-evidence-p5--06102026).
 Chi tiết [evidence P1](M5_IMPLEMENTATION_PLAN.md#7-evidence-p1--04102026).
 Chi tiết: [evidence P2](M5_IMPLEMENTATION_PLAN.md#8-evidence-p2--04102026).
 Chi tiết: [evidence P3](M5_IMPLEMENTATION_PLAN.md#9-evidence-p3--04102026).

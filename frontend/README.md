@@ -44,10 +44,12 @@ P3 upload/download, P4 delete/pending cleanup, P5 manual repair và P6 UI/API
 runtime/failure flows (fallback download, repair khi node DOWN, offline DELETE,
 OPERATION_BUSY) đã qua gate trên Compose local một `dev_host`.
 **M5 hoàn thành P1–P7 (05/10/2026).** P7 docs-only bàn giao M6; local process
-failure không chứng minh hai host/LAN CORS. Xem
+failure không chứng minh hai host/LAN CORS. **M6 P1–P5 hoàn thành 06/10/2026**
+trên hai host LAN (API/rehearsal; UI Vite không bắt buộc trong gate). Xem
 [evidence P6](../docs/M5_IMPLEMENTATION_PLAN.md#12-evidence-p6--05102026),
-[bàn giao M6](../docs/M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal)
-và [evidence P7](../docs/M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026).
+[bàn giao M6](../docs/M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal),
+[evidence P7](../docs/M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026) và
+[M6 plan](../docs/M6_IMPLEMENTATION_PLAN.md).
 READY là readiness Metadata,
 không bảo đảm mọi chunk đọc được. Nút làm mới chỉ gửi GET.
 

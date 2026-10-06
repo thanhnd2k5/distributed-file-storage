@@ -62,7 +62,15 @@ Chi tiết: [evidence P5](docs/M5_IMPLEMENTATION_PLAN.md#11-evidence-p5--0510202
 Chi tiết: [evidence P6](docs/M5_IMPLEMENTATION_PLAN.md#12-evidence-p6--05102026).
 Các fixes sau review M4 có focused regression evidence nhưng chưa deploy live
 theo ghi nhận cuối (warning bàn giao, không blocker UI local đã pass).
-Tiếp theo **M6: hai máy và rehearsal**. Handoff M4 gốc:
+**M6 hoàn thành P1–P5 (06/10/2026).** Bring-up hai host LAN + rehearsal R1–R4
+thật (commit `fa1c52b`): 3 node ACTIVE / 2 failure domain; tắt B vẫn download;
+repair scoped khi còn node-3; bật lại node-2 có `OVER_REPLICATED` giữ nguyên.
+Không suy từ M5 local `dev_host`. Chi tiết:
+[M6 plan](docs/M6_IMPLEMENTATION_PLAN.md),
+[evidence P3](docs/M6_IMPLEMENTATION_PLAN.md#6-evidence-p3--06102026),
+[evidence P4](docs/M6_IMPLEMENTATION_PLAN.md#7-evidence-p4--06102026),
+[evidence P5](docs/M6_IMPLEMENTATION_PLAN.md#8-evidence-p5--06102026).
+Handoff M4 gốc:
 [bàn giao M5](docs/M4_IMPLEMENTATION_PLAN.md#12-bàn-giao-m5--ui-tối-thiểu),
 [evidence P6 M4](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p6--04102026) và
 [evidence P7 M4](docs/M4_IMPLEMENTATION_PLAN.md#evidence-p7--04102026).
@@ -304,7 +312,8 @@ Stop/start giữ nguyên bốn named volumes. Compose local dùng cùng `dev_hos
 
 ### Demo hai máy (M6)
 
-Cùng commit trên hai host, cùng Wi-Fi/hotspot. Preflight:
+**Đã rehearsal 06/10/2026** trên hai host LAN (`machine_A` / `machine_B`) —
+khác Compose local một `dev_host`. Cùng commit, cùng Wi-Fi/hotspot. Preflight:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy/preflight-m6.ps1 -Role Check
@@ -313,6 +322,7 @@ powershell -ExecutionPolicy Bypass -File deploy/preflight-m6.ps1 -Role Check
 ```
 
 Điền LAN IP máy B vào `MACHINE_B_HOST` trên máy A (script Role A làm giúp).
+Dừng `compose.local` trước nếu đang chiếm `:8000` / `:50051`.
 Chi tiết: [docs/M6_IMPLEMENTATION_PLAN.md](docs/M6_IMPLEMENTATION_PLAN.md).
 
 ```powershell
@@ -324,8 +334,13 @@ docker compose --env-file deploy/.env.machine-b -f deploy/compose.machine-b.yml 
 Copy-Item deploy/.env.machine-a.example deploy/.env.machine-a
 docker compose --env-file deploy/.env.machine-a -f deploy/compose.machine-a.yml up -d --build --wait
 curl.exe --fail-with-body http://localhost:8000/api/v1/health/ready
+curl.exe --fail-with-body http://localhost:8000/api/v1/cluster
 curl.exe --fail-with-body http://localhost:8000/api/v1/nodes
 ```
+
+Gate bring-up: ready 200, 3 node ACTIVE, 2 failure domains. Rehearsal: upload
+RF=2 khác domain → stop B vẫn download → start B rồi stop chỉ `storage-node-2`
++ `POST /admin/repair` scoped → start lại node-2 (có thể OVER_REPLICATED).
 
 UI vẫn chạy trên Máy A (`frontend/`, port 5173, `VITE_STORAGE_API_URL` trỏ
 `http://localhost:8000/api/v1`). Mở inbound TCP 50052/50053 trên B.

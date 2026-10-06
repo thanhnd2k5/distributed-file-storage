@@ -211,11 +211,10 @@ host. Xem [evidence P6](M5_IMPLEMENTATION_PLAN.md#12-evidence-p6--05102026).
 evidence, chốt [bàn giao M6](M5_IMPLEMENTATION_PLAN.md#13-bàn-giao-m6--hai-máy-và-rehearsal),
 đồng bộ README/index; không rerun runtime/deploy. Xem
 [evidence P7](M5_IMPLEMENTATION_PLAN.md#14-evidence-p7--05102026).
-Tiếp theo **M6 hai máy và rehearsal** (Compose A/B, LAN/CORS, failure-domain
-demo). Kế hoạch chi tiết: [M6_IMPLEMENTATION_PLAN.md](M6_IMPLEMENTATION_PLAN.md).
-**P1–P2 hoàn thành 05/10/2026:** Compose A/B + env examples +
-`deploy/preflight-m6.ps1` (Check/B qua); chưa claim bring-up/rehearsal hai host
-(P3–P4 khi ngồi chung).
+**M6 hoàn thành P1–P5 ngày 06/10/2026** (Compose A/B, LAN bring-up, failure-domain
+rehearsal R1–R4, docs). Kế hoạch/evidence:
+[M6_IMPLEMENTATION_PLAN.md](M6_IMPLEMENTATION_PLAN.md). Không suy từ M5 local
+`dev_host`.
 
 ## 3. Kiểm tra có ý nghĩa
 
@@ -266,9 +265,9 @@ Không chạy kịch bản host failure lần đầu vào ngày nộp. Trước 
 - [ ] Delete/failed upload cleanup giữ qua Metadata restart.
 - [ ] Một Metadata worker; serialization và timeout/retry theo đặc tả.
 - [ ] React hiện rõ node/domain/chunk và outcome repair.
-- [ ] Cùng code/build chạy được dev local và demo hai máy.
-- [ ] Demo physical host failure không làm mất khả năng đọc file còn đủ replica ở A.
-- [ ] Có hướng dẫn setup thực tế và kịch bản demo đã chạy thử.
+- [x] Cùng code/build chạy được dev local và demo hai máy (M6 P3, 06/10/2026).
+- [x] Demo physical host failure không làm mất khả năng đọc file còn đủ replica ở A (M6 P4 R2).
+- [x] Có hướng dẫn setup thực tế và kịch bản demo đã chạy thử (M6 P4–P5).
 - [ ] Docs phản ánh code cuối, không hứa metadata HA hoặc recovery khi không còn source.
 
 ## 7. Nếu tiến độ chậm
