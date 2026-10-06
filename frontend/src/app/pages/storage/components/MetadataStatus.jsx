@@ -9,7 +9,7 @@ export default function MetadataStatus({ ready, cluster }) {
       className="dark:border-dark-600 dark:bg-dark-800 mt-6 rounded-xl border border-gray-200 bg-white p-5"
     >
       <div className="flex flex-wrap items-center gap-3">
-        <h2 className="font-semibold">Metadata</h2>
+        <h2 className="font-semibold">Kết nối Metadata</h2>
         <Badge color={available ? "success" : "warning"} variant="soft">
           {ready.isPending
             ? "Đang kết nối"

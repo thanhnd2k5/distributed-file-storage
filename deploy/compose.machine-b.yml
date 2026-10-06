@@ -1,0 +1,58 @@
+name: dfs-machine-b
+
+# Machine B demo: chỉ Storage Node 2 + 3 (failure_domain=machine_B).
+# Publish gRPC ra LAN để Metadata trên máy A gọi được.
+# Không chạy Metadata/PostgreSQL/React trên B.
+
+x-python: &python
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile.python
+    target: runtime
+  image: dfs-python:demo
+  init: true
+  restart: unless-stopped
+
+x-storage-env: &storage-env
+  FAILURE_DOMAIN: machine_B
+  GRPC_BIND_HOST: 0.0.0.0
+  DATA_DIR: /data/chunks
+  CHUNK_SIZE_BYTES: "2097152"
+  GRPC_MAX_MESSAGE_BYTES: "8388608"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-storage-health: &storage-health
+  test: ["CMD", "python", "scripts/check_storage.py"]
+  interval: 5s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+services:
+  storage-node-2:
+    <<: *python
+    environment:
+      <<: *storage-env
+      NODE_ID: node-2
+      GRPC_PORT: "50052"
+    ports:
+      - "${NODE_2_BIND:-0.0.0.0}:${NODE_2_PORT:-50052}:50052"
+    volumes:
+      - node-2-data:/data/chunks
+    healthcheck: *storage-health
+
+  storage-node-3:
+    <<: *python
+    environment:
+      <<: *storage-env
+      NODE_ID: node-3
+      GRPC_PORT: "50053"
+    ports:
+      - "${NODE_3_BIND:-0.0.0.0}:${NODE_3_PORT:-50053}:50053"
+    volumes:
+      - node-3-data:/data/chunks
+    healthcheck: *storage-health
+
+volumes:
+  node-2-data:
+  node-3-data:

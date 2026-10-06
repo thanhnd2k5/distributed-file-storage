@@ -298,8 +298,37 @@ docker compose --env-file deploy/.env -f deploy/compose.local.yml stop
 docker compose --env-file deploy/.env -f deploy/compose.local.yml start --wait
 ```
 
-Stop/start giữ nguyên bốn named volumes. Compose local dùng cùng `dev_host`;
-demo hai máy và các file Compose A/B sẽ làm ở M6.
+Stop/start giữ nguyên bốn named volumes. Compose local dùng cùng `dev_host`
+(process failure only). Demo hai máy: [M6 plan](docs/M6_IMPLEMENTATION_PLAN.md),
+`deploy/compose.machine-a.yml` + `deploy/compose.machine-b.yml`.
+
+### Demo hai máy (M6)
+
+Cùng commit trên hai host, cùng Wi-Fi/hotspot. Preflight:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy/preflight-m6.ps1 -Role Check
+# Máy B: Role B [-EnsureFirewall]
+# Máy A: Role A -MachineBHost <IP_B> [-ProbePorts]
+```
+
+Điền LAN IP máy B vào `MACHINE_B_HOST` trên máy A (script Role A làm giúp).
+Chi tiết: [docs/M6_IMPLEMENTATION_PLAN.md](docs/M6_IMPLEMENTATION_PLAN.md).
+
+```powershell
+# Máy B — chỉ Storage node-2/3, publish LAN
+Copy-Item deploy/.env.machine-b.example deploy/.env.machine-b
+docker compose --env-file deploy/.env.machine-b -f deploy/compose.machine-b.yml up -d --build --wait
+
+# Máy A — Metadata + PostgreSQL + node-1; sửa MACHINE_B_HOST trước khi up
+Copy-Item deploy/.env.machine-a.example deploy/.env.machine-a
+docker compose --env-file deploy/.env.machine-a -f deploy/compose.machine-a.yml up -d --build --wait
+curl.exe --fail-with-body http://localhost:8000/api/v1/health/ready
+curl.exe --fail-with-body http://localhost:8000/api/v1/nodes
+```
+
+UI vẫn chạy trên Máy A (`frontend/`, port 5173, `VITE_STORAGE_API_URL` trỏ
+`http://localhost:8000/api/v1`). Mở inbound TCP 50052/50053 trên B.
 
 Smoke M2 mặc định chỉ đọc REST. Kịch bản PowerShell bên dưới dành cho local dev:
 stop/start node-2, restart Metadata/PostgreSQL, giữ volumes và chỉ dọn schema

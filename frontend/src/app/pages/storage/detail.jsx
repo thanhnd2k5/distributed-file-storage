@@ -2,12 +2,10 @@ import { Link, useParams } from "react-router";
 import { Button } from "components/ui/Button";
 import { useDocumentTitle } from "hooks/useDocumentTitle";
 import { useFileDetailPage } from "./hooks/useFileDetailPage";
-import MetadataStatus from "./components/MetadataStatus";
 import FileMetadata from "./components/FileMetadata";
 import PlacementPanel from "./components/PlacementPanel";
 import DownloadPanel from "./components/DownloadPanel";
 import DeletePanel from "./components/DeletePanel";
-import TransferNotice from "./components/TransferNotice";
 import RepairPanel from "./components/RepairPanel";
 
 export default function StorageDetailPage() {
@@ -35,10 +33,6 @@ export default function StorageDetailPage() {
       <p className="dark:text-dark-200 mt-2 text-sm break-all text-gray-600">
         ID: {fileId}
       </p>
-      <MetadataStatus
-        ready={page.connection.ready}
-        cluster={page.connection.cluster}
-      />
       <DownloadPanel
         file={page.valid ? page.file.data : null}
         connection={page.connection}
@@ -50,7 +44,6 @@ export default function StorageDetailPage() {
         notFound={page.notFound || page.deleted}
         readError={page.file.isError}
       />
-      <TransferNotice />
       <RepairPanel
         key={fileId}
         connection={page.connection}

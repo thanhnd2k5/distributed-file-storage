@@ -28,7 +28,15 @@ class MetadataSettings(TransferSettings):
     repair_max_chunks: int = Field(default=8, ge=1, le=8)
     repair_time_budget_seconds: FiniteFloat = Field(default=30, gt=0)
     download_temp_dir: Path = Path(".runtime/downloads")
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:5177",
+        "http://localhost:5178",
+        "http://localhost:5179",
+    ]
 
     @field_validator("database_url")
     @classmethod
