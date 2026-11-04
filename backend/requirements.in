@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+h11
 SQLAlchemy
 alembic
 psycopg[binary]
