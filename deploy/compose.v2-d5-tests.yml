@@ -1,0 +1,8 @@
+# D5 fixture only: evidence under an ignored workspace directory, no V1 mounts.
+services:
+  tests:
+    mem_limit: 3g
+    environment:
+      V2_D5_REPORT_DIR: /evidence
+    volumes:
+      - ../backend/.runtime/v2-d5:/evidence

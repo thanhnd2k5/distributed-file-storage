@@ -1,0 +1,6 @@
+# C3 only: adds the real ingress executable to the isolated tests image.
+services:
+  tests:
+    image: dfs-v2-http-tests:dev
+    build:
+      target: v2-http-tests

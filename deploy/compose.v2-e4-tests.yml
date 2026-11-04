@@ -1,0 +1,8 @@
+# E4 evidence is isolated from the existing D5 reports.
+services:
+  tests:
+    mem_limit: 3g
+    environment:
+      V2_D5_REPORT_DIR: /evidence
+    volumes:
+      - ../backend/.runtime/v2-e4:/evidence
