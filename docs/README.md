@@ -1,5 +1,156 @@
 # Distributed File Storage — bộ đặc tả V1
 
+**Hướng phát triển mới (21/10/2026):** [Thiết kế V2](V2_DESIGN.md) đề xuất xây
+lại kiến trúc cho tệp lớn, upload có thể tiếp tục, nhiều instance và phục hồi
+sự cố. V2 là kho dùng chung, không tài khoản/phân quyền người dùng; trọng tâm
+là luồng lưu trữ phân tán. Tài liệu V2 là thiết kế đích, chưa phải runtime đã triển khai; bộ V1
+bên dưới vẫn mô tả hệ thống hiện tại.
+
+**Cập nhật V2 (22/10/2026):** chốt hash nguồn trước upload/resume, streaming bytes,
+fencing tại Storage, sổ dung lượng và chế độ phục hồi DB. Reconcile/cleanup cơ bản
+và kiểm chứng hai instance được đưa vào B–C; xem các mục 2.1, 4.1–4.2, 6.1–6.2,
+7.1 và 9.1 của thiết kế V2. Đây là quyết định thiết kế, chưa có evidence runtime.
+
+**Mốc A V2 (22/10/2026):** đã có baseline [API](V2_API_CONTRACTS.md),
+[schema logic](V2_METADATA_SCHEMA.md), [state machines/ADR và crash matrix](V2_CORRECTNESS.md)
+và [protobuf V2](../backend/contracts/v2_storage.proto). Wire compile/import và
+targeted Ruff đã qua trên native Windows; đây là evidence contract, chưa phải
+runtime V2. Gate/evidence và bàn giao mốc B ở cuối [thiết kế V2](V2_DESIGN.md).
+
+**Mốc B V2 (23/10/2026):** hoàn tất B1–B4 trong phạm vi foundation Storage
+ledger/streaming/gRPC, metadata/session/capacity và hook maintenance/recovery.
+Xem [phase/evidence B](V2_B_IMPLEMENTATION_PLAN.md); B4 bổ sung 4 case liên kết
+PostgreSQL/gRPC/ledger cho incarnation, ENOSPC và epoch. Chưa có HTTP/Transfer
+upload/resume/finalize hoặc restore backup toàn cluster. Tiếp theo
+[mốc C — upload streaming/resume](V2_C_IMPLEMENTATION_PLAN.md). Cấu hình DB test
+riêng không publish host port và cách chạy ở [V2 local tests](V2_LOCAL_TESTS.md).
+
+**C1 V2 (23/10/2026):** hoàn tất transaction renew/confirm/reconcile/retry,
+complete/manifest và finalize publication ở tầng domain. 59 ca C1 và 17
+regression B3 khác nhau đã pass qua các lượt focused PostgreSQL; không cộng
+rerun thành full suite. Đã sửa race job lease hết hạn trong lúc chờ row lock.
+Xem [evidence và bàn giao C2](V2_C_IMPLEMENTATION_PLAN.md#6-evidence-c1--23102026).
+Tiếp theo Worker reconcile/cleanup/finalize; C chưa có HTTP/Transfer E2E.
+
+**C2 V2 (24/10/2026):** hoàn tất Worker riêng reconcile/cleanup/finalize với
+bounded jobs/finalize/stream buffer, renew/retry và shutdown. 44 ca C2 khác nhau
+qua các lượt focused PostgreSQL + gRPC/filesystem, gồm 10 SIGKILL commit boundaries
+và entrypoint SIGTERM; 31 direct C1/B3 regressions pass. Không cộng rerun thành
+full suite. Xem [evidence C2 và bàn giao C3](V2_C_IMPLEMENTATION_PLAN.md#8-evidence-c2--24102026).
+Tiếp theo C3 API/Transfer; chưa có HTTP upload E2E hoặc benchmark tệp lớn.
+
+**C3 V2 (24/10/2026):** hoàn tất API upload public/internal trên listener riêng,
+Transfer streaming bounded queue/deadline/renew và lifecycle/readiness từng role.
+28 ca C3 khác nhau + 2 direct create/admission regressions pass qua các lượt
+focused HTTP/PostgreSQL/gRPC/filesystem; có Nginx thật, lost response, retry
+handoff, SIGTERM/resume và complete tới publish/abort cleanup. Không cộng rerun
+thành full suite. Xem [evidence C3 và bàn giao C4](V2_C_IMPLEMENTATION_PLAN.md#10-evidence-c3--24102026)
+và [runtime/env/ingress](V2_C3_RUNTIME.md). Tiếp theo **C4 client pre-hash/resume**;
+chưa benchmark 1–10 GiB/RSS hoặc chạy hai API/hai Transfer C5.
+
+**C4 V2 (25/10/2026):** đã có [client tối thiểu `/uploads-v2`](V2_C4_CLIENT.md),
+incremental SHA-256 trong Web Worker, journal/key bền vững trên browser,
+resume đúng nguồn và parts paging, complete/poll cùng pause/abort/cleanup riêng.
+18 nhóm kiểm browser/controller/API thật pass; PostgreSQL/gRPC/Nginx và đọc lại
+bytes hai replica xác nhận 10 file AVAILABLE. ESLint/build/Ruff passed. Native
+file picker/click-flow UI đầy đủ chưa xác nhận do browser automation lỗi; xem
+[evidence và giới hạn C4](V2_C_IMPLEMENTATION_PLAN.md#12-evidence-c4--25102026).
+Tiếp theo **C5 nhiều instance, crash và tài nguyên**; mốc C chưa hoàn tất.
+
+**C5 bước đầu (26/10/2026):** gate file nhỏ trên hai process API public, hai
+internal và hai Transfer qua Nginx round robin đã có evidence. Ba ca focused
+integration qua hai lượt kiểm empty/biên chunk, restart/resume và SIGKILL giữa
+stream với lease DB thật, generation fencing và abort/cleanup; sáu file AVAILABLE
+được đọc lại bytes/hash trên cả hai replica. Ruff passed. Xem
+[evidence C5](V2_C_IMPLEMENTATION_PLAN.md#14-evidence-c5-bước-đầu--26102026)
+và [cách chạy](V2_LOCAL_TESTS.md#nhiều-instance-c5--gate-file-nhỏ).
+Còn client C4 trên topology này, 1–10 GiB/RSS/backpressure và crash matrix bổ sung;
+**C5 và mốc C chưa hoàn tất**.
+
+**D1 V2 (28/10/2026):** theo chỉ đạo người dùng, tạm gác gate browser C5 để
+làm phần download độc lập. Đã có logic HTTP thuần cho GET/HEAD, Range,
+conditional ETag và attachment header an toàn; **121 unit tests** và Ruff
+hai file passed trên Windows. Chưa nối route/streaming/read lease;
+**D chưa hoàn tất**. Xem [kế hoạch và evidence D1](V2_D_IMPLEMENTATION_PLAN.md),
+tiếp theo D2 read/delete lease. Gate C5 còn thiếu giữ nguyên trong kế hoạch C.
+
+**D2 V2 (28/10/2026):** hoàn tất domain acquire/renew/release read lease,
+immutable manifest paging và file tombstone/cleanup; không thay schema foundation.
+57 ca D2 và 20 direct regressions pass trên Docker Linux/PostgreSQL, gồm hai
+connection cạnh tranh và Worker/gRPC/bytes thật cho cleanup chờ người đọc;
+Ruff check/format hai file qua native Windows. Xem
+[evidence D2](V2_D_IMPLEMENTATION_PLAN.md#4-evidence-d2--28102026). Tiếp theo
+**D3 API metadata/read commands/DELETE**; chưa có HTTP download streaming/Range,
+benchmark hoặc D5. C5 vẫn tạm gác, mốc C và D chưa hoàn tất.
+
+**D3 V2 (28/10/2026):** hoàn tất public catalog/metadata/chunks/DELETE và
+internal acquire/manifest/renew/release; Transfer HEAD download qua ingress,
+không read lease/Storage I/O. 55 ca D3 và 13 direct C3 regressions pass trên
+HTTP/PostgreSQL/Nginx thật, gồm cleanup chờ người đọc với gRPC/bytes hai replica;
+Ruff check/format sáu file qua. Xem
+[evidence D3](V2_D_IMPLEMENTATION_PLAN.md#5-evidence-d3--28102026). Tiếp theo
+**D4 GET download streaming/Range**; chưa có binary download HTTP, benchmark
+hoặc D5. C5 vẫn tạm gác, mốc C và D chưa hoàn tất.
+
+**D4 V2 (29/10/2026):** GET binary/Range qua Transfer–Storage đã có one-chunk
+verify, fallback hữu hạn, renew read lease và cancellation/backpressure.
+60 ca D4 riêng biệt qua các lượt chọn lọc trên Docker Linux/PostgreSQL,
+HTTP/Nginx/gRPC/SQLite/bytes thật; blocked-send dùng ASGI có điều phối.
+23 direct regressions và Ruff check/format năm file đã pass.
+Xem [evidence D4](V2_D_IMPLEMENTATION_PLAN.md#6-evidence-d4--29102026).
+Tiếp theo **D5 nhiều instance, read/delete race và budget tải hỗn hợp**;
+chưa có benchmark TTFB/read amplification/RSS. C5 vẫn tạm gác, mốc C và D chưa hoàn tất.
+
+**D5 V2 (29/10/2026):** baseline mốc D đã hoàn tất với Nginx, hai API/hai Transfer
+và Storage/Worker process độc lập. Sáu ca D01–D04 pass; hai ca race được siết
+assertion và chạy lại riêng pass, Ruff hai files pass. Range/read-delete/fallback
+và bốn download 64 MiB cùng upload/finalize có evidence bytes/lease/buffer/RSS thật.
+Transfer RSS mixed phase khoảng 104–105 MiB/process trong fixture cap 3 GiB.
+Xem [D5 evidence](V2_D5_EVIDENCE.md) cho topology, lệnh và giới hạn phép đo.
+Tiếp theo mốc **E admission/capacity/fairness**; C5/file 1–10 GiB vẫn tạm gác,
+mốc C chưa hoàn tất. Nhiều process cùng host chưa phải HA.
+
+**Fixes review trước E (29/10/2026):** đã sửa cả bốn findings: reader chung
+allocation, control HTTP deadline/cancellation, duration float và tracing cho
+admission. **82 ca Linux liên quan pass** (32 mới, 44 hồi quy, 6 D5), Ruff bảy file
+Python pass. D5 đã đổi sang bốn reader cùng file 64 MiB, hai Transfer/RF=2; sampled
+RSS khoảng 100–102 MiB/process trong fixture. Xem
+[evidence fixes](V2_PRE_E_FIXES.md). E chưa bắt đầu; C5/file lớn vẫn tạm gác.
+
+**E1 V2 (29/10/2026):** HTTP/control admission có reservation hai chiều cho
+new work/progress trong cùng tổng cap; mặc định 32/8 cho phép tối đa 24 mỗi nhóm,
+giữ ít nhất 8 slot cho nhóm kia, không queue. **90 ca liên quan pass**: 40 policy
+trên Windows, 4 integration mới + 45 direct regressions + 1 mixed-load nhiều
+process trên Docker Linux/PostgreSQL; Ruff check/format sáu file pass. Xem
+[contract, commands, evidence và bàn giao E2](V2_E_IMPLEMENTATION_PLAN.md).
+Phạm vi E1 là admission theo process; C5/file lớn vẫn tạm gác.
+
+**E2 V2 (30/10/2026):** hoàn tất audit durable session/claim/node accounting.
+**22 integration pass** trên Docker Linux/PostgreSQL/POSIX thật: hai process
+tranh quota, crash trước/sau commit, mất Store/Delete ACK và restart; không
+double grant/release, chỉ durable Delete ACK hợp lệ trả node charge. Ruff hai
+file mới pass; không sửa runtime/schema. Chốt chưa thêm durable grant download/
+job cho topology hữu hạn; khi tăng instance phải cộng các cap mỗi process và
+internal retry lanes. Xem [audit, evidence và bàn giao E3](V2_E_IMPLEMENTATION_PLAN.md#contract-và-audit-e2--30102026).
+Phạm vi E2 là durable accounting; C5/file lớn vẫn tạm gác.
+
+**E3 V2 (30/10/2026):** Worker luân phiên cleanup/reconcile/finalize, nhường lượt
+sau chunk/allocation/RPC và giữ tối đa 2 continuation/kind (mặc định 6 lease,
+2 quantum chạy cùng lúc). Shared read budget 64 MiB/s/Worker được cấp trước
+GetChunk; paused lease/deadline/fencing và bounded shutdown giữ đúng. **77 ca
+liên quan pass**: 16 native, 11 integration mới, 50 Worker/job/HTTP handoff
+regressions; Ruff năm file pass. Xem
+[contract và evidence E3](V2_E_IMPLEMENTATION_PLAN.md#contract-e3--worker-fairness-và-io).
+Trạng thái hiện tại: **E1–E3 hoàn tất baseline; E4 và mốc E chưa hoàn tất**;
+C5/browser/file lớn vẫn tạm gác.
+
+**E4 V2 (30/10/2026):** gate 1/4/16 active session và gate 16 stream đồng thời
+đã pass trên topology hai API, hai internal, hai Transfer, hai Storage và một
+Worker. Gate 16 stream kiểm 429, delete chờ 16 read lease và cleanup trả charge
+về 0; mixed-load mặc định cũng pass. Xem [evidence và giới hạn E4](V2_E_IMPLEMENTATION_PLAN.md#e4-16-byte-stream-và-deletecleanup--30102026).
+Các gate đã pass ở lượt trước; lượt 1/4/16 sau thay đổi fixture đang chờ xác minh
+vì PostgreSQL test chưa chạy. Browser C5, file lớn và HA nhiều host chưa nghiệm thu.
+
 **Đặc tả 02/10/2026 · Một người code · M0–M2 hoàn thành 03/10/2026, M3–M4 hoàn thành 04/10/2026.**
 
 ## Đọc theo thứ tự
