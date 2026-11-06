@@ -12,7 +12,7 @@ trước E đã có evidence. C5/browser/file 1–10 GiB tiếp tục tạm gác
 | E1 — hoàn tất baseline | Admission hai nhóm cho incoming HTTP và outgoing control: new work/progress, reservation hai chiều trong tổng cap, không queue | 40 policy + 4 integration mới, 45 direct regressions và 1 mixed-load nhiều process pass; evidence bên dưới |
 | E2 — hoàn tất baseline | Audit durable session/claim/node accounting; hai process tranh cùng cap, crash/lost ACK/restart; chốt chưa thêm grant download/job toàn cluster trong topology hữu hạn | 22 focused integration pass trên PostgreSQL/POSIX thật; đối chiếu counter với owner rows cùng snapshot; quyết định và giới hạn bên dưới |
 | E3 — hoàn tất baseline | Luân phiên claim/dispatch theo kind; nhường lượt sau chunk/allocation/RPC; bounded continuations và shared read credit trước GetChunk | 16 policy + 11 integration mới + 50 direct regressions pass; paused lease/token/deadline và shutdown có gate bên dưới |
-| E4 — cần xác minh lại | Gate multi-process, 1/4/16 session, 16 stream đồng thời, overload/delete/cleanup và budget deployment | Các gate đã pass ở những lượt trước; cần kết quả pytest cho lượt 1/4/16 sau thay đổi fixture, xem blocker bên dưới |
+| E4 — hoàn tất baseline | Gate multi-process, 1/4/16 session, 16 stream đồng thời, overload/delete/cleanup và budget deployment | 3 workload session pass (0.258s/0.705s/1.980s) + 1 gate 16-stream pass + 1 mixed-load pass trên Docker Linux/PostgreSQL; evidence xác nhận 06/11/2026 |
 
 Không coi admission trong RAM là counter bền vững toàn cluster. E1 chỉ bảo vệ
 entry points/control calls của từng process; owner/capacity ledger PostgreSQL,
@@ -512,24 +512,25 @@ full backend/frontend, smoke, browser C5, file 1–10 GiB, HA/failover nhiều h
 hoặc gate release; không suy các kết quả đó từ E4. Hai workload 16 session và
 16 stream là các ca riêng, không phải 16 upload và 16 download đồng thời.
 
-### Cập nhật xác minh E4 — 01/11/2026
+### Xác minh hoàn tất E4 — 06/11/2026
 
-Lượt `tests/test_v2_e4.py` đã khởi chạy lại sau khi fixture D5 được thêm cấu hình
-cho 16 stream, nhưng phiên lệnh không còn truy xuất được exit code hoặc kết quả
-pytest. Các report hiện có giá trị đo cho cả ba mức, song report được ghi trong
-fixture teardown và **không thay thế kết quả pytest pass**. Các số 0.299/0.548/
-1.713s ở trên thuộc lượt đã pass trước thay đổi fixture; report hiện tại đã được
-ghi đè bởi lượt chưa xác nhận, nên không dùng các file đó làm bằng chứng cho
-những con số cũ. Gate 16 stream và mixed-load đã có kết quả pass riêng như trên.
-
-Preflight hiện tại: Docker 29.8.2 hoạt động, nhưng `postgres` của
-`deploy/compose.v2-metadata-tests.yml` **không chạy**, nên chưa thể kiểm lại
-`tests/test_v2_e4.py`. Đây là tác vụ kiểm thử: không tự start service hoặc reset
-dữ liệu. Sau khi người dùng xác nhận fixture sẵn sàng, kiểm preflight rồi chạy
-chỉ lệnh `tests/test_v2_e4.py` đã ghi ở trên một lần. Lệnh phục hồi fixture:
+Preflight: Docker 29.8.2 hoạt động, `dfs-v2-tests-postgres-1` healthy, query trả
+`dfs_v2_test|v2_test|1`. Lệnh chạy chính thức từ root:
 
 ```powershell
-docker compose -f deploy/compose.v2-metadata-tests.yml up -d --wait postgres
+docker-compose -f deploy/compose.v2-metadata-tests.yml -f deploy/compose.v2-http-tests.yml -f deploy/compose.v2-e4-tests.yml build tests
+docker-compose -f deploy/compose.v2-metadata-tests.yml -f deploy/compose.v2-http-tests.yml -f deploy/compose.v2-e4-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_e4.py
 ```
 
-Đến khi lượt đó pass, trạng thái E4 của source/fixture hiện tại là **chờ xác minh**.
+Image `dfs-v2-http-tests:dev` (built từ target `v2-http-tests`).
+**3 passed in 39.67s**, không skip:
+- 1/4/16 active upload sessions, file 64 KiB, RF=2, tối đa bốn transfer đồng thời;
+  đối chiếu session/claim/node counter, hash download và hash bytes tại cả hai
+  Storage, cả hai Transfer được dùng ở mức 4/16.
+- Toàn bộ 16 session download đều hash đúng, transfers cân bằng (mỗi Transfer 8 chunks đọc,
+  max 2 concurrent downloads).
+- Thời gian toàn workload lần lượt 0.258s (1 session), 0.705s (4 sessions), và
+  1.980s (16 sessions).
+- Kết hợp với gate 16 stream đồng thời và mixed-load đã pass trước đó, **toàn bộ
+  gate E4 đã được xác minh thành công với kết quả pytest pass**.
+- Mốc E (E1–E4) chính thức **hoàn tất baseline**. Đủ điều kiện bắt đầu runtime Mốc F.

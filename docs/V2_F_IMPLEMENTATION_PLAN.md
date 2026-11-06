@@ -1,8 +1,8 @@
 # Mốc F — automatic repair, rejoin và scrub
 
 Ngày 01/11/2026. Đây là **kế hoạch**, chưa có implementation hoặc evidence F.
-E1–E3 hoàn tất baseline; E4 còn chờ xác minh lại gate 1/4/16 session sau thay
-đổi fixture. Chỉ bắt đầu runtime F sau khi chốt E4. C5/browser/file 1–10 GiB
+E1–E4 đã hoàn tất baseline và xác minh xong ngày 06/11/2026.
+Mốc E đã chốt xong; đủ điều kiện bắt đầu runtime F. C5/browser/file 1–10 GiB
 vẫn tạm gác, không được suy là hoàn tất từ E hoặc F.
 
 Đọc cùng [thiết kế §6–7](V2_DESIGN.md), [schema](V2_METADATA_SCHEMA.md),
@@ -101,6 +101,6 @@ process cùng host chỉ chứng minh logic này, chưa chứng minh chịu mấ
 
 ## Evidence hiện tại
 
-Chỉ rà soát tài liệu, schema, Storage RPC và Worker dispatch ngày 01/11/2026.
-Không thay runtime/schema, không chạy test cho kế hoạch tài liệu này. F1–F5
-chưa bắt đầu; E4 vẫn chờ dependency và kết quả pytest xác nhận.
+Rà soát tài liệu, schema, Storage RPC và Worker dispatch ngày 01/11/2026;
+cập nhật 06/11/2026 sau khi E4 đã có pytest pass xác nhận. F1–F5 chưa
+bắt đầu code.

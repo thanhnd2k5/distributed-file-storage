@@ -141,15 +141,15 @@ GetChunk; paused lease/deadline/fencing và bounded shutdown giữ đúng. **77 
 liên quan pass**: 16 native, 11 integration mới, 50 Worker/job/HTTP handoff
 regressions; Ruff năm file pass. Xem
 [contract và evidence E3](V2_E_IMPLEMENTATION_PLAN.md#contract-e3--worker-fairness-và-io).
-Trạng thái hiện tại: **E1–E3 hoàn tất baseline; E4 và mốc E chưa hoàn tất**;
-C5/browser/file lớn vẫn tạm gác.
+Trạng thái hiện tại: **E1–E4 hoàn tất baseline; mốc E hoàn tất**;
+C5/browser/file lớn vẫn tạm gác. Tiếp theo **mốc F — automatic repair, rejoin và scrub**.
 
-**E4 V2 (30/10/2026):** gate 1/4/16 active session và gate 16 stream đồng thời
-đã pass trên topology hai API, hai internal, hai Transfer, hai Storage và một
-Worker. Gate 16 stream kiểm 429, delete chờ 16 read lease và cleanup trả charge
-về 0; mixed-load mặc định cũng pass. Xem [evidence và giới hạn E4](V2_E_IMPLEMENTATION_PLAN.md#e4-16-byte-stream-và-deletecleanup--30102026).
-Các gate đã pass ở lượt trước; lượt 1/4/16 sau thay đổi fixture đang chờ xác minh
-vì PostgreSQL test chưa chạy. Browser C5, file lớn và HA nhiều host chưa nghiệm thu.
+**E4 V2 (xác minh 06/11/2026):** gate 1/4/16 active session (3 passed / 39.67s,
+elapsed 0.258s/0.705s/1.980s) và gate 16 stream đồng thời đã pass trên topology
+hai API, hai internal, hai Transfer, hai Storage và một Worker. Gate 16 stream
+kiểm 429, delete chờ 16 read lease và cleanup trả charge về 0; mixed-load mặc định
+cũng pass. Xem [evidence và giới hạn E4](V2_E_IMPLEMENTATION_PLAN.md#xác-minh-hoàn-tất-e4--06112026).
+Browser C5, file lớn và HA nhiều host chưa nghiệm thu.
 
 **Đặc tả 02/10/2026 · Một người code · M0–M2 hoàn thành 03/10/2026, M3–M4 hoàn thành 04/10/2026.**
 
