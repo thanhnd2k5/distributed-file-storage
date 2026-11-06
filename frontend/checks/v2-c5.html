@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="vi">
+  <head><meta charset="UTF-8" /><title>C5 client and resource gate</title></head>
+  <body>
+    <h1>C5: client C4 · 2 API · 2 Transfer · RF=2</h1>
+    <p>Disposable fixture. Sources are written to OPFS with bounded blocks.</p>
+    <button id="small">Run small and crash checks</button>
+    <button id="large1">Run 1 GiB</button>
+    <button id="large10">Run 10 GiB</button>
+    <button id="slow">Run slow replica check</button>
+    <p id="state" role="status">Ready</p>
+    <pre id="live"></pre><pre id="report"></pre>
+    <script type="module" src="./v2-c5.js"></script>
+  </body>
+</html>

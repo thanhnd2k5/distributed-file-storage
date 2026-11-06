@@ -1,0 +1,7 @@
+# Optional focused Storage V2 gate. No V1 volume or service is started.
+services:
+  tests:
+    environment:
+      V2_DISK_FULL_DIR: /v2-disk-full
+    tmpfs:
+      - /v2-disk-full:size=8m

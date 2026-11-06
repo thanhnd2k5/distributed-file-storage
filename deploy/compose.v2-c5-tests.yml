@@ -1,0 +1,4 @@
+# C5 fixture only. Bound process/page-cache memory; no production/V1 services.
+services:
+  tests:
+    mem_limit: 3g

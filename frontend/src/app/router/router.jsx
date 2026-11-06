@@ -19,6 +19,12 @@ const router = createBrowserRouter([
     hydrateFallbackElement: <SplashScreen />,
     ErrorBoundary: RootErrorBoundary,
     children: [
+      {
+        path: "uploads-v2",
+        lazy: async () => ({
+          Component: (await import("app/pages/storageV2")).default,
+        }),
+      },
       publicRoutes,
       {
         id: "starter",

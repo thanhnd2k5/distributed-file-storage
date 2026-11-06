@@ -6,11 +6,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/common common
 COPY backend/metadata metadata
 COPY backend/storage storage
+COPY backend/transfer transfer
 COPY backend/generated generated
 COPY backend/contracts contracts
 COPY backend/scripts scripts
 COPY backend/alembic.ini .
 RUN python scripts/generate_proto.py
+RUN python scripts/generate_v2_proto.py
 CMD ["python", "-m", "storage.server"]
 
 FROM runtime AS development
@@ -19,4 +21,8 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY backend/tests tests
 COPY backend/pyproject.toml .
 CMD ["python", "-m", "pytest", "-q"]
+
+FROM development AS v2-http-tests
+RUN apt-get update && apt-get install -y --no-install-recommends nginx-light && rm -rf /var/lib/apt/lists/*
+COPY deploy/v2-ingress.conf /app/v2-ingress.conf
 

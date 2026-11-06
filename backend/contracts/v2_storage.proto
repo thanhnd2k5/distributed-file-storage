@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+package dfs.storage.v2;
+
+// V2 is isolated from dfs.storage.v1. Normative semantics: docs/V2_API_CONTRACTS.md.
+// UUIDs are canonical lowercase strings; hashes are lowercase SHA-256 hex.
+// All uint64 values must fit signed PostgreSQL/SQLite BIGINT (0..2^63-1).
+service StorageService {
+  rpc PrepareAllocation(PrepareAllocationRequest) returns (AllocationRecord);
+  rpc StoreChunk(stream StoreChunkFrame) returns (StoreChunkResponse);
+  rpc GetChunk(GetChunkRequest) returns (stream GetChunkFrame);
+  rpc InspectAllocation(AllocationRequest) returns (AllocationRecord);
+  rpc DeleteAllocation(AllocationRequest) returns (AllocationRecord);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc ListAllocations(ListAllocationsRequest) returns (ListAllocationsResponse);
+}
+
+message NodeScope {
+  string namespace_id = 1;
+  string recovery_epoch = 2;
+  string node_id = 3;
+  string node_incarnation = 4;
+}
+
+message AllocationKey {
+  NodeScope scope = 1;
+  string allocation_id = 2;
+}
+
+enum AllocationState {
+  ALLOCATION_STATE_UNSPECIFIED = 0;
+  PREPARED = 1;
+  WRITING = 2;
+  STORED = 3;
+  DELETED = 4;
+  CORRUPT = 5;
+}
+
+message ChunkSpec {
+  string chunk_id = 1;
+  uint64 size_bytes = 2;
+  string checksum_sha256 = 3;
+}
+
+message PrepareAllocationRequest {
+  AllocationKey key = 1;
+  uint64 generation = 2; // Positive; monotonically increases per allocation.
+  ChunkSpec chunk = 3; // Immutable through all generations.
+}
+
+message AllocationRequest {
+  AllocationKey key = 1;
+  uint64 generation = 2;
+}
+
+message AllocationRecord {
+  AllocationKey key = 1;
+  uint64 generation = 2;
+  AllocationState state = 3;
+  ChunkSpec chunk = 4; // Absent for a tombstone created before Prepare.
+  optional uint64 actual_size_bytes = 5;
+  optional string actual_checksum_sha256 = 6;
+  uint64 inventory_sequence = 7; // Stable insertion sequence, not a state version.
+  bool cleanup_complete = 8; // Only true for DELETED after durable physical cleanup.
+}
+
+message StoreChunkHeader {
+  AllocationKey key = 1;
+  uint64 generation = 2;
+  ChunkSpec chunk = 3;
+}
+
+message DataBlock {
+  uint64 offset = 1;
+  bytes data = 2; // 1..262144 bytes; offsets start at zero, no gaps/overlap.
+}
+
+message StoreChunkFrame {
+  oneof payload {
+    StoreChunkHeader header = 1; // Exactly once, first frame.
+    DataBlock block = 2;
+  }
+}
+
+message StoreChunkResponse {
+  AllocationRecord allocation = 1; // STORED; actual size/hash are required.
+  bool already_stored = 2;
+}
+
+message GetChunkRequest {
+  AllocationKey key = 1;
+  ChunkSpec expected_chunk = 2;
+}
+
+message GetChunkFooter {
+  uint64 actual_size_bytes = 1;
+  string actual_checksum_sha256 = 2;
+}
+
+message GetChunkFrame {
+  oneof payload {
+    AllocationRecord header = 1; // Exactly once; STORED and expected ChunkSpec.
+    DataBlock block = 2;
+    GetChunkFooter footer = 3; // Exactly once, last; followed by successful EOF.
+  }
+}
+
+message HealthCheckRequest {
+  NodeScope scope = 1;
+}
+
+message HealthCheckResponse {
+  NodeScope scope = 1;
+  string failure_domain = 2;
+  bool writable = 3;
+  bool recovery_required = 4;
+  uint64 filesystem_capacity_bytes = 5;
+  uint64 filesystem_available_bytes = 6;
+  uint64 committed_bytes = 7;
+  uint64 temporary_bytes = 8;
+  uint64 ledger_bytes = 9;
+}
+
+message ListAllocationsRequest {
+  NodeScope scope = 1;
+  uint64 after_sequence = 2; // Exclusive; zero starts a scan.
+  optional uint64 upper_sequence = 3; // Omit on first request, echo response thereafter.
+  uint32 limit = 4; // 1..1000; zero is invalid.
+}
+
+message ListAllocationsResponse {
+  repeated AllocationRecord items = 1;
+  uint64 upper_sequence = 2;
+  uint64 next_after_sequence = 3;
+  bool has_more = 4;
+}

@@ -23,7 +23,9 @@ grpcio==1.84.0
 grpcio-tools==1.84.0
     # via -r requirements.in
 h11==0.16.0
-    # via uvicorn
+    # via
+    #   -r requirements.in
+    #   uvicorn
 idna==3.20
     # via anyio
 mako==1.4.3

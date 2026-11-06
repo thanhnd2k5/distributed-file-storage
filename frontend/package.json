@@ -19,6 +19,7 @@
     "@headlessui/react": "^2.2.4",
     "@heroicons/react": "^2.2.0",
     "@hookform/resolvers": "^5.0.1",
+    "@noble/hashes": "2.4.0",
     "@tailwindcss/vite": "^4.1.7",
     "@tanem/react-nprogress": "^5.0.55",
     "@tanstack/match-sorter-utils": "^8.19.4",

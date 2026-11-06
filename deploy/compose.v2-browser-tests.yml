@@ -1,0 +1,11 @@
+# C4 only: the disposable browser fixture gets a localhost ingress binding.
+# PostgreSQL stays solely on the existing internal default network.
+services:
+  tests:
+    networks:
+      - default
+      - browser
+
+networks:
+  browser:
+    name: dfs-v2-c4-browser
