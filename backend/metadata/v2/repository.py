@@ -13,6 +13,8 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
+from metadata.v2.health import next_health
+
 
 class DomainError(Exception):
     def __init__(self, code):
@@ -782,10 +784,112 @@ class Repository:
                 "UPDATE storage_nodes SET "
                 "active_incarnation=:inc,health_state='ACTIVE',"
                 "health_generation=health_generation+1,"
-                "health_observed_at=clock_timestamp() WHERE node_id=:node",
+                "health_observed_at=clock_timestamp(),available_bytes=NULL WHERE node_id=:node",
                 node=node_id,
                 inc=incarnation,
             )
+            execute(
+                db,
+                """INSERT INTO node_health_polls (node_id) VALUES (:node)
+                ON CONFLICT (node_id) DO UPDATE SET
+                    next_poll_at=clock_timestamp(),ticket_expires_at=NULL,
+                    consecutive_failures=0,consecutive_successes=0,writable=NULL""",
+                node=node_id,
+            )
+
+    def claim_health_poll(self):
+        """Claim one due node. Lock node before the poll row, including on activation."""
+        with self.transaction() as db:
+            node = (
+                execute(
+                    db,
+                    """SELECT n.node_id,n.host,n.port,n.failure_domain,n.health_state,
+                              n.active_incarnation AS incarnation
+                    FROM node_health_polls p JOIN storage_nodes n USING (node_id)
+                    JOIN node_incarnations i ON i.node_id=n.node_id
+                        AND i.incarnation=n.active_incarnation
+                    WHERE p.next_poll_at<=clock_timestamp() AND n.enabled
+                        AND n.health_state!='QUARANTINED'
+                        AND i.state='ACTIVE' AND i.recovery_epoch=:epoch
+                    ORDER BY p.next_poll_at,n.node_id LIMIT 1 FOR UPDATE OF n SKIP LOCKED""",
+                    epoch=self.epoch,
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if node is None:
+                return None
+            # The joined schedule could have changed before the node lock was acquired.
+            if not execute(
+                db,
+                """UPDATE node_health_polls
+                SET ticket_expires_at=statement_timestamp()+interval '5 seconds',
+                    next_poll_at=statement_timestamp()+interval '5 seconds'
+                WHERE node_id=:node AND next_poll_at<=clock_timestamp()""",
+                node=node["node_id"],
+            ).rowcount:
+                return None
+            generation = execute(
+                db,
+                """UPDATE storage_nodes SET health_generation=health_generation+1
+                WHERE node_id=:node RETURNING health_generation""",
+                node=node["node_id"],
+            ).scalar_one()
+            return dict(
+                node,
+                namespace_id=self.namespace_id,
+                recovery_epoch=self.epoch,
+                generation=generation,
+            )
+
+    def apply_health_poll(self, ticket, observation):
+        if (ticket["namespace_id"], ticket["recovery_epoch"]) != (self.namespace_id, self.epoch):
+            return False
+        with self.transaction() as db:
+            node = execute(
+                db,
+                """SELECT n.node_id FROM storage_nodes n
+                JOIN node_incarnations i ON i.node_id=n.node_id
+                    AND i.incarnation=n.active_incarnation
+                WHERE n.node_id=:node_id AND n.enabled AND n.health_state=:health_state
+                    AND n.host=:host AND n.port=:port AND n.failure_domain=:failure_domain
+                    AND n.active_incarnation=:incarnation AND n.health_generation=:generation
+                    AND i.state='ACTIVE' AND i.recovery_epoch=:recovery_epoch
+                FOR UPDATE OF n""",
+                **ticket,
+            ).one_or_none()
+            if node is None:
+                return False
+            poll = execute(
+                db,
+                """SELECT consecutive_failures,consecutive_successes FROM node_health_polls
+                WHERE node_id=:node AND ticket_expires_at>clock_timestamp()""",
+                node=ticket["node_id"],
+            ).one_or_none()
+            if poll is None:
+                return False
+            state, failures, successes = next_health(ticket["health_state"], *poll, observation)
+            execute(
+                db,
+                """UPDATE node_health_polls SET ticket_expires_at=NULL,
+                    next_poll_at=clock_timestamp()+interval '10 seconds',
+                    consecutive_failures=:failures,consecutive_successes=:successes,
+                    writable=:writable WHERE node_id=:node""",
+                failures=failures,
+                successes=successes,
+                writable=observation.writable,
+                node=ticket["node_id"],
+            )
+            execute(
+                db,
+                """UPDATE storage_nodes
+                SET health_state=:state,health_observed_at=clock_timestamp(),
+                    available_bytes=:available WHERE node_id=:node""",
+                state=state,
+                available=observation.available_bytes,
+                node=ticket["node_id"],
+            )
+            return True
 
     def set_budget(self, node_id, incarnation, budget):
         positive(budget, zero=True)

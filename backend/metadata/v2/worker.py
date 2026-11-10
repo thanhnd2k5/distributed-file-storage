@@ -154,6 +154,8 @@ class Worker:
         self.executor = ThreadPoolExecutor(
             max_workers=self.config.slots, thread_name_prefix="v2-job"
         )
+        self.health_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="v2-health")
+        self.health_future = None
         self.futures = {}
         self.executing, self.resident = {}, {}
         self.queues = {kind: deque() for kind in KINDS}
@@ -411,6 +413,11 @@ class Worker:
             self.repo.ready()
             self.running.set()
             while not self.stopping.is_set():
+                if self.health_future is not None and self.health_future.done():
+                    self.health_future.result()
+                    self.health_future = None
+                if self.health_future is None:
+                    self.health_future = self.health_executor.submit(self.poll_health)
                 self.tick()
                 self.stopping.wait(self.config.poll_seconds)
         finally:
@@ -420,11 +427,25 @@ class Worker:
             finally:
                 self.consumer_slot.release()
 
+    def poll_health(self):
+        if self.stopping.is_set():
+            return
+        try:
+            ticket = self.repo.claim_health_poll()
+            if ticket is None or self.stopping.is_set():
+                return
+            observation = self.storage.health(ticket, self.stopping)
+            if observation is not None and not self.stopping.is_set():
+                self.repo.apply_health_poll(ticket, observation)
+        except (DomainError, SQLAlchemyError) as exc:
+            log.warning("V2 node health poll deferred: %s", type(exc).__name__)
+
     def close(self):
         self.stopping.set()
         due = time.monotonic() + self.config.shutdown_seconds
         self.shutdown_due = due
         self.executor.shutdown(wait=False, cancel_futures=True)
+        self.health_executor.shutdown(wait=False, cancel_futures=True)
         # Executor shutdown can leave a queued Future in CANCELLED (not yet
         # CANCELLED_AND_NOTIFIED). wait() would retain it until timeout despite
         # cancelled()/done() being true; it owns no running quantum to drain.
@@ -437,6 +458,10 @@ class Worker:
                 self.resident.pop(job_id)
         if pending:
             raise RuntimeError("V2 Worker did not drain within shutdown budget")
+        if self.health_future is not None and not self.health_future.done():
+            _, pending_health = wait([self.health_future], timeout=max(0, due - time.monotonic()))
+            if pending_health:
+                raise RuntimeError("V2 health poll did not drain within shutdown budget")
         if not self.consumer_done.wait(max(0, due - time.monotonic())):
             raise RuntimeError("V2 consumer did not drain within shutdown budget")
         self.futures.clear()

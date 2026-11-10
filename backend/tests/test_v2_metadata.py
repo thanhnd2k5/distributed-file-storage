@@ -93,8 +93,13 @@ def test_migration_replay_schema_and_scope(foundation):
     tables = sql(
         repo, "SELECT tablename FROM pg_tables WHERE schemaname=:schema", schema=repo.schema
     )
-    assert len(tables) == 15  # fourteen domain tables plus migration version
-    assert {row["tablename"] for row in tables} >= {"download_leases", "manifest_parts", "jobs"}
+    assert len(tables) == 16  # fifteen domain tables plus migration version
+    assert {row["tablename"] for row in tables} >= {
+        "download_leases",
+        "manifest_parts",
+        "jobs",
+        "node_health_polls",
+    }
     with pytest.raises(ValueError, match="mismatch"):
         migrate(repo.engine, uuid4(), repo.epoch, schema=repo.schema)
     assert repo.ready()

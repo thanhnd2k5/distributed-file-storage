@@ -37,7 +37,7 @@ def cluster(foundation, tmp_path):
                 provision=True,
                 chunk_limit=3,
             )
-            server, port, executor = create_server(ledger)
+            server, port, executor = create_server(ledger, failure_domain=node)
             resources.append((ledger, server, executor))
             server.start()
             repo.provision_node(
@@ -699,6 +699,11 @@ def test_worker_entrypoint_sigterm_cancels_real_grpc_and_can_restart(cluster):
     entered, drained = Event(), Event()
 
     class Blocked(rpc.StorageServiceServicer):
+        def HealthCheck(self, request, context):
+            port = endpoints[request.scope.node_id]
+            with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                return rpc.StorageServiceStub(channel).HealthCheck(request, timeout=2)
+
         def GetChunk(self, request, context):
             port = endpoints[request.key.scope.node_id]
             with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:

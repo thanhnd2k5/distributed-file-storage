@@ -7,19 +7,21 @@ import grpc
 import v2_storage_pb2 as pb
 import v2_storage_pb2_grpc as rpc
 
+from metadata.v2.health import HealthObservation
 from metadata.v2.repository import AllocationEvidence, DeleteEvidence, DomainError
 
 
-def key_for(d):
-    return pb.AllocationKey(
-        scope=pb.NodeScope(
-            namespace_id=str(d["namespace_id"]),
-            recovery_epoch=str(d["recovery_epoch"]),
-            node_id=d["node_id"],
-            node_incarnation=str(d["incarnation"]),
-        ),
-        allocation_id=str(d["allocation_id"]),
+def scope_for(d):
+    return pb.NodeScope(
+        namespace_id=str(d["namespace_id"]),
+        recovery_epoch=str(d["recovery_epoch"]),
+        node_id=d["node_id"],
+        node_incarnation=str(d["incarnation"]),
     )
+
+
+def key_for(d):
+    return pb.AllocationKey(scope=scope_for(d), allocation_id=str(d["allocation_id"]))
 
 
 def spec_for(d):
@@ -109,6 +111,42 @@ class StorageClient:
             finally:
                 work.detach(call)
                 call.cancel()
+
+    def health(self, node, stopping):
+        scope = scope_for(node)
+        with self.channel(node) as channel:
+            call = rpc.StorageServiceStub(channel).HealthCheck.future(
+                pb.HealthCheckRequest(scope=scope), timeout=2.0
+            )
+            try:
+                while not stopping.is_set():
+                    try:
+                        response = call.result(timeout=0.1)
+                        break
+                    except grpc.FutureTimeoutError:
+                        continue
+                else:
+                    return None
+            except grpc.RpcError as exc:
+                outcome = (
+                    "scope_mismatch"
+                    if exc.code() == grpc.StatusCode.FAILED_PRECONDITION
+                    else "unreachable"
+                )
+                return HealthObservation(outcome)
+            finally:
+                call.cancel()
+        if (
+            response.scope != scope
+            or response.failure_domain != node["failure_domain"]
+            or response.recovery_required
+        ):
+            return HealthObservation("scope_mismatch")
+        if not response.filesystem_available_bytes <= response.filesystem_capacity_bytes < 2**63:
+            return HealthObservation("unreachable")
+        return HealthObservation(
+            "reachable", response.filesystem_available_bytes, response.writable
+        )
 
     def read(self, d, digest, work):
         """Return updated full digest only after validated footer AND successful EOF.
