@@ -796,6 +796,33 @@ class Repository:
                     consecutive_failures=0,consecutive_successes=0,writable=NULL""",
                 node=node_id,
             )
+            self._requeue_dead_repairs(db)
+
+    @staticmethod
+    def _requeue_dead_repairs(db):
+        execute(
+            db,
+            """WITH candidates AS (
+                SELECT job_id, row_number() OVER (
+                    PARTITION BY dedup_key ORDER BY created_at DESC, job_id DESC
+                ) AS rn
+                FROM jobs
+                WHERE kind='REPAIR' AND state='DEAD'
+            ),
+            picked AS (
+                SELECT j.job_id FROM jobs j JOIN candidates c USING (job_id)
+                WHERE c.rn=1 AND j.state='DEAD'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs active
+                      WHERE active.kind='REPAIR' AND active.dedup_key=j.dedup_key
+                        AND active.state IN ('READY','RUNNING','RETRY')
+                  )
+                ORDER BY j.job_id FOR UPDATE OF j SKIP LOCKED
+            )
+            UPDATE jobs j SET state='RETRY',attempts=0,run_after=clock_timestamp(),
+                lease_owner=NULL,lease_expires_at=NULL
+            FROM picked p WHERE j.job_id=p.job_id""",
+        )
 
     def claim_health_poll(self):
         """Claim one due node. Lock node before the poll row, including on activation."""
@@ -889,6 +916,8 @@ class Repository:
                 available=observation.available_bytes,
                 node=ticket["node_id"],
             )
+            if state == "ACTIVE" and ticket["health_state"] != "ACTIVE":
+                self._requeue_dead_repairs(db)
             return True
 
     def set_budget(self, node_id, incarnation, budget):
@@ -927,6 +956,8 @@ class Repository:
                 inc=incarnation,
                 budget=budget,
             )
+            if budget > row["allocatable_bytes"]:
+                self._requeue_dead_repairs(db)
             return True
 
     def _lock_session(self, db, upload_id):
@@ -1358,6 +1389,13 @@ class Repository:
             counts = self._replica_counts(db, chunk_id)
             if not counts["nodes"] or self._meets_replica_policy(counts, policy):
                 return None
+            if execute(
+                db,
+                "SELECT 1 FROM jobs WHERE kind='REPAIR' AND dedup_key=:key "
+                "AND state='DEAD' LIMIT 1",
+                key=str(chunk_id),
+            ).first():
+                return None
             return self.enqueue(
                 db,
                 "REPAIR",
@@ -1398,7 +1436,125 @@ class Repository:
             .all()
         )
 
-    def reserve_repair(self, chunk_id, version_id, lease: JobLease):
+    def _repair_sources(self, db, part):
+        return [
+            dict(
+                row,
+                namespace_id=self.namespace_id,
+                chunk_id=part["chunk_id"],
+                size_bytes=part["size_bytes"],
+                checksum_sha256=part["checksum_sha256"],
+            )
+            for row in execute(
+                db,
+                """SELECT DISTINCT ON (a.node_id) a.allocation_id,a.node_id,
+                    a.incarnation,a.recovery_epoch,a.generation,n.host,n.port,
+                    a.failure_domain_snapshot
+                FROM allocations a
+                JOIN storage_nodes n ON n.node_id=a.node_id AND n.active_incarnation=a.incarnation
+                JOIN node_incarnations i ON i.node_id=a.node_id AND i.incarnation=a.incarnation
+                WHERE a.chunk_id=:chunk AND a.state='STORED' AND a.replica_health='VERIFIED'
+                  AND a.ack_size=:size AND a.ack_hash=:hash
+                  AND a.recovery_epoch=:epoch AND i.recovery_epoch=:epoch
+                  AND n.enabled AND n.health_state='ACTIVE' AND i.state='ACTIVE'
+                ORDER BY a.node_id,a.allocation_id""",
+                chunk=part["chunk_id"],
+                size=part["size_bytes"],
+                hash=part["checksum_sha256"],
+                epoch=self.epoch,
+            ).mappings()
+        ]
+
+    def repair_sources(self, chunk_id, version_id, lease: JobLease):
+        with self.transaction() as db:
+            _, part = self._lock_repair_part(db, chunk_id, version_id)
+            sources = self._repair_sources(db, part)
+            self._validate_job(db, lease, "REPAIR", chunk_id)
+            return sources
+
+    def repair_can_continue(self, chunk_id, version_id, *, exclude=()):
+        with self.transaction() as db:
+            session, part = self._lock_repair_part(db, chunk_id, version_id)
+            targets = self._repair_targets(db)
+            counts = self._replica_counts(db, chunk_id)
+            if self._meets_replica_policy(counts, session):
+                return True
+            if not counts["nodes"]:
+                return False
+            allocations = self._allocations(db, part, lock=False)
+            candidates = self._repair_candidates(
+                targets, counts, session, allocations, exclude=exclude
+            )
+            for node in candidates:
+                budget = execute(
+                    db,
+                    "SELECT allocatable_bytes-charged_bytes AS free "
+                    "FROM node_budgets WHERE node_id=:node AND incarnation=:inc",
+                    node=node["node_id"],
+                    inc=node["incarnation"],
+                ).scalar_one()
+                if budget >= part["size_bytes"]:
+                    return True
+            return False
+
+    @staticmethod
+    def _cleared_repair_payload(payload, tried_nodes):
+        updated = {k: v for k, v in payload.items() if k not in ("allocation_id", "intent_fence")}
+        if tried_nodes:
+            updated["tried_nodes"] = tried_nodes
+        return updated
+
+    def _abandon_allocation_in_tx(self, db, session, part, allocation, tried_nodes, version_id):
+        aid = allocation["allocation_id"]
+        if not execute(
+            db,
+            "UPDATE allocations SET state='DELETE_PENDING' "
+            "WHERE allocation_id=:aid AND state IN ('RESERVED','UNKNOWN')",
+            aid=aid,
+        ).rowcount:
+            raise DomainError("REPAIR_INTENT_CONFLICT")
+        execute(
+            db,
+            "UPDATE write_attempts SET state='UNKNOWN' "
+            "WHERE allocation_id=:aid AND state IN ('INTENDED','IN_FLIGHT')",
+            aid=aid,
+        )
+        if allocation["node_id"] not in tried_nodes:
+            tried_nodes.append(allocation["node_id"])
+        return self.enqueue(
+            db,
+            "CLEANUP",
+            aid,
+            payload=dict(
+                allocation_id=str(aid),
+                file_id=str(session["file_id"]),
+                chunk_id=str(part["chunk_id"]),
+                version_id=str(version_id),
+            ),
+            dedup_key=f"allocation:{aid}",
+        )
+
+    @staticmethod
+    def _create_repair_allocation(db, chunk_id, target, part):
+        aid = uuid4()
+        execute(
+            db,
+            """INSERT INTO allocations (allocation_id,chunk_id,node_id,incarnation,
+            recovery_epoch,generation,failure_domain_snapshot,charged_bytes,state,
+            replica_health,observation_generation)
+            VALUES (:aid,:chunk,:node,:inc,:epoch,1,:domain,:size,
+            'RESERVED','UNKNOWN',0)""",
+            aid=aid,
+            chunk=chunk_id,
+            node=target["node_id"],
+            inc=target["incarnation"],
+            epoch=part["recovery_epoch"] if "recovery_epoch" in part else target["recovery_epoch"],
+            domain=target["failure_domain"],
+            size=part["size_bytes"],
+        )
+        return aid, 1
+
+    def reserve_repair(self, chunk_id, version_id, lease: JobLease, *, exclude_nodes=()):
         """Persist one destination before I/O. A reclaimed job reuses its charge."""
         with self.transaction() as db:
             session, part = self._lock_repair_part(db, chunk_id, version_id)
@@ -1415,11 +1571,37 @@ class Repository:
             ):
                 raise DomainError("STALE_JOB")
             aid = payload.get("allocation_id")
-            allocations = self._allocations(db, part, lock=aid is not None)
+            allocations = self._allocations(db, part, lock=False)
+            tried_nodes = list(payload.get("tried_nodes", ()))
             if aid is not None:
                 allocation = next((a for a in allocations if str(a["allocation_id"]) == aid), None)
                 if allocation is None or allocation["state"] not in ("RESERVED", "UNKNOWN"):
                     raise DomainError("REPAIR_INTENT_CONFLICT")
+                if self._meets_replica_policy(counts, session):
+                    allocation = (
+                        execute(
+                            db,
+                            "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
+                            aid=allocation["allocation_id"],
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    self._abandon_allocation_in_tx(
+                        db, session, part, allocation, tried_nodes, version_id
+                    )
+                    cleared = self._cleared_repair_payload(payload, tried_nodes)
+                    self._validate_job(db, lease, "REPAIR", chunk_id)
+                    if not execute(
+                        db,
+                        """UPDATE jobs SET payload=CAST(:payload AS jsonb)
+                        WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
+                        job=lease.job_id,
+                        payload=json.dumps(cleared),
+                    ).rowcount:
+                        raise DomainError("STALE_JOB")
+                    self._finish_domain_job(db, lease, "REPAIR", chunk_id)
+                    return None
                 target = next(
                     (
                         n
@@ -1433,19 +1615,58 @@ class Repository:
                     ),
                     None,
                 )
-                if target is None:
-                    raise DomainError("REPAIR_DESTINATION_UNAVAILABLE")
-                job = self._validate_job(db, lease, "REPAIR", chunk_id)
-                aid = allocation["allocation_id"]
-                generation = allocation["generation"]
-                if payload["intent_fence"] != lease.token:
-                    generation += 1
-                    execute(
+                if target is not None:
+                    allocation = (
+                        execute(
+                            db,
+                            "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
+                            aid=allocation["allocation_id"],
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    job = self._validate_job(db, lease, "REPAIR", chunk_id)
+                    aid = allocation["allocation_id"]
+                    generation = allocation["generation"]
+                    if payload["intent_fence"] != lease.token:
+                        generation += 1
+                        execute(
+                            db,
+                            "UPDATE allocations SET generation=:generation,state='UNKNOWN' "
+                            "WHERE allocation_id=:aid",
+                            aid=aid,
+                            generation=generation,
+                        )
+                else:
+                    if not counts["nodes"]:
+                        raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
+                    replacement = self._charge_repair_target(
                         db,
-                        "UPDATE allocations SET generation=:generation,state='UNKNOWN' "
-                        "WHERE allocation_id=:aid",
-                        aid=aid,
-                        generation=generation,
+                        targets,
+                        counts,
+                        session,
+                        part,
+                        allocations,
+                        exclude=exclude_nodes,
+                        tried_nodes=tried_nodes,
+                    )
+                    allocation = (
+                        execute(
+                            db,
+                            "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
+                            aid=allocation["allocation_id"],
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    self._abandon_allocation_in_tx(
+                        db, session, part, allocation, tried_nodes, version_id
+                    )
+                    payload = self._cleared_repair_payload(payload, tried_nodes)
+                    job = self._validate_job(db, lease, "REPAIR", chunk_id)
+                    target = replacement
+                    aid, generation = self._create_repair_allocation(
+                        db, chunk_id, dict(target, recovery_epoch=self.epoch), part
                     )
             else:
                 if self._meets_replica_policy(counts, session):
@@ -1453,23 +1674,19 @@ class Repository:
                     return None
                 if not counts["nodes"]:
                     raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
-                target = self._charge_repair_target(db, targets, counts, session, part, allocations)
-                job = self._validate_job(db, lease, "REPAIR", chunk_id)
-                aid, generation = uuid4(), 1
-                execute(
+                target = self._charge_repair_target(
                     db,
-                    """INSERT INTO allocations (allocation_id,chunk_id,node_id,incarnation,
-                    recovery_epoch,generation,failure_domain_snapshot,charged_bytes,state,
-                    replica_health,observation_generation)
-                    VALUES (:aid,:chunk,:node,:inc,:epoch,1,:domain,:size,
-                    'RESERVED','UNKNOWN',0)""",
-                    aid=aid,
-                    chunk=chunk_id,
-                    node=target["node_id"],
-                    inc=target["incarnation"],
-                    epoch=self.epoch,
-                    domain=target["failure_domain"],
-                    size=part["size_bytes"],
+                    targets,
+                    counts,
+                    session,
+                    part,
+                    allocations,
+                    exclude=exclude_nodes,
+                    tried_nodes=tried_nodes,
+                )
+                job = self._validate_job(db, lease, "REPAIR", chunk_id)
+                aid, generation = self._create_repair_allocation(
+                    db, chunk_id, dict(target, recovery_epoch=self.epoch), part
                 )
             if payload.get("intent_fence") != lease.token:
                 execute(
@@ -1483,14 +1700,15 @@ class Repository:
                     job=lease.job_id,
                     expires=job["lease_expires_at"],
                 )
+                new_payload = dict(payload, allocation_id=str(aid), intent_fence=lease.token)
+                if tried_nodes:
+                    new_payload["tried_nodes"] = tried_nodes
                 changed = execute(
                     db,
                     """UPDATE jobs SET payload=CAST(:payload AS jsonb)
                     WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
                     job=lease.job_id,
-                    payload=json.dumps(
-                        dict(payload, allocation_id=str(aid), intent_fence=lease.token)
-                    ),
+                    payload=json.dumps(new_payload),
                 ).rowcount
                 if not changed:
                     raise DomainError("STALE_JOB")
@@ -1506,18 +1724,36 @@ class Repository:
             )
 
     @staticmethod
-    def _charge_repair_target(db, targets, counts, session, part, allocations):
+    def _repair_candidates(
+        targets, counts, session, allocations, *, exclude=(), preferred_exclude=()
+    ):
         existing_nodes = {a["node_id"] for a in allocations}
-        domains = set(counts["domain_names"])
+        excluded = set(exclude)
+        domains = set(counts["domain_names"] or ())
         candidates = [
             n
             for n in targets
             if n["node_id"] not in existing_nodes
+            and n["node_id"] not in excluded
             and (
                 counts["domains"] >= session["min_distinct_domains"]
                 or n["failure_domain"] not in domains
             )
         ]
+        if preferred_exclude:
+            tried = set(preferred_exclude)
+            return [n for n in candidates if n["node_id"] not in tried] + [
+                n for n in candidates if n["node_id"] in tried
+            ]
+        return candidates
+
+    @staticmethod
+    def _charge_repair_target(
+        db, targets, counts, session, part, allocations, *, exclude=(), tried_nodes=()
+    ):
+        candidates = Repository._repair_candidates(
+            targets, counts, session, allocations, exclude=exclude, preferred_exclude=tried_nodes
+        )
         for node in candidates:
             if execute(
                 db,
@@ -1530,6 +1766,59 @@ class Repository:
             ).rowcount:
                 return node
         raise DomainError("REPAIR_DESTINATION_UNAVAILABLE")
+
+    def abandon_repair_destination(
+        self, chunk_id, version_id, lease: JobLease, allocation_id: UUID
+    ):
+        """Mark a failed repair allocation DELETE_PENDING and enqueue durable cleanup."""
+        with self.transaction() as db:
+            session, part = self._lock_repair_part(db, chunk_id, version_id)
+            allocations = self._allocations(db, part, lock=True)
+            allocation = next((a for a in allocations if a["allocation_id"] == allocation_id), None)
+            if allocation is None or allocation["state"] not in ("RESERVED", "UNKNOWN"):
+                raise DomainError("REPAIR_INTENT_CONFLICT")
+            job = self._validate_job(db, lease, "REPAIR", chunk_id)
+            payload = job["payload"]
+            if (
+                payload.get("file_id"),
+                payload.get("version_id"),
+                payload.get("allocation_id"),
+                payload.get("intent_fence"),
+            ) != (
+                str(session["file_id"]),
+                str(version_id),
+                str(allocation_id),
+                lease.token,
+            ):
+                raise DomainError("STALE_JOB")
+            tried_nodes = list(payload.get("tried_nodes", ()))
+            cleanup_job_id = self._abandon_allocation_in_tx(
+                db, session, part, allocation, tried_nodes, version_id
+            )
+            cleared = self._cleared_repair_payload(payload, tried_nodes)
+            if not execute(
+                db,
+                """UPDATE jobs SET payload=CAST(:payload AS jsonb)
+                WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
+                job=lease.job_id,
+                payload=json.dumps(cleared),
+            ).rowcount:
+                raise DomainError("STALE_JOB")
+            node = (
+                execute(
+                    db,
+                    "SELECT host,port FROM storage_nodes WHERE node_id=:node",
+                    node=allocation["node_id"],
+                )
+                .mappings()
+                .one()
+            )
+            return dict(
+                allocation,
+                **node,
+                namespace_id=self.namespace_id,
+                cleanup_job_id=cleanup_job_id,
+            )
 
     def confirm_repair(self, chunk_id, version_id, lease: JobLease, proof: AllocationEvidence):
         """Publish only the live job's exact durable STORED acknowledgment."""
@@ -1561,6 +1850,7 @@ class Repository:
             by_id = self._check_acks(db, repair_part, [allocation], [proof])
             self._record_acks(db, repair_part, [allocation], by_id)
             self._finish_domain_job(db, lease, "REPAIR", chunk_id)
+            return proof
 
     def _record_acks(self, db, part, allocations, by_id):
         for allocation in allocations:
@@ -1972,7 +2262,7 @@ class Repository:
             return self.session(db, upload_id)
 
     @staticmethod
-    def enqueue(db, kind, target, payload=None):
+    def enqueue(db, kind, target, payload=None, *, dedup_key=None):
         return execute(
             db,
             """INSERT INTO jobs (job_id,kind,dedup_key,target_id,payload,
@@ -1982,7 +2272,7 @@ class Repository:
             DO UPDATE SET dedup_key=excluded.dedup_key RETURNING job_id""",
             id=uuid4(),
             kind=kind,
-            key=str(target),
+            key=dedup_key or str(target),
             target=target,
             payload=json.dumps(payload or {}),
         ).scalar_one()
@@ -2302,6 +2592,156 @@ class Repository:
             self._validate_cleanup_job(db, lease, session["file_id"])
             return True
 
+    def release_abandoned_allocation(
+        self, evidence: DeleteEvidence, lease: JobLease, *, cleanup_job_id=None
+    ):
+        """Release one DELETE_PENDING repair allocation after durable DeleteEvidence."""
+        if (
+            evidence.namespace_id,
+            evidence.recovery_epoch,
+            evidence.state,
+            evidence.cleanup_complete,
+        ) != (self.namespace_id, self.epoch, "DELETED", True):
+            raise DomainError("INVALID_DELETE_ACK")
+        with self.transaction() as db:
+            row = (
+                execute(
+                    db,
+                    "SELECT a.*,p.upload_id FROM allocations a JOIN upload_parts p "
+                    "USING(chunk_id) WHERE allocation_id=:aid",
+                    aid=evidence.allocation_id,
+                )
+                .mappings()
+                .one()
+            )
+            self._lock_session(db, row["upload_id"])
+            execute(
+                db,
+                "SELECT chunk_id FROM upload_parts WHERE chunk_id=:chunk FOR UPDATE",
+                chunk=row["chunk_id"],
+            ).one()
+            execute(
+                db,
+                "SELECT node_id FROM node_budgets WHERE node_id=:node AND "
+                "incarnation=:inc FOR UPDATE",
+                node=row["node_id"],
+                inc=row["incarnation"],
+            ).one()
+            row = (
+                execute(
+                    db,
+                    "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
+                    aid=evidence.allocation_id,
+                )
+                .mappings()
+                .one()
+            )
+            if (row["node_id"], row["incarnation"], row["recovery_epoch"], row["generation"]) != (
+                evidence.node_id,
+                evidence.incarnation,
+                evidence.recovery_epoch,
+                evidence.generation,
+            ):
+                raise DomainError("INVALID_DELETE_ACK")
+            released = False
+            if row["state"] == "DELETE_PENDING":
+                execute(
+                    db,
+                    "UPDATE allocations SET "
+                    "state='RELEASED',cleanup_complete_at=clock_timestamp() WHERE "
+                    "allocation_id=:aid",
+                    aid=evidence.allocation_id,
+                )
+                execute(
+                    db,
+                    "UPDATE node_budgets SET "
+                    "charged_bytes=charged_bytes-:size,revision=revision+1 WHERE "
+                    "node_id=:node AND incarnation=:inc",
+                    size=row["charged_bytes"],
+                    node=row["node_id"],
+                    inc=row["incarnation"],
+                )
+                execute(
+                    db,
+                    "UPDATE write_attempts SET "
+                    "state='CLOSED',finished_at=clock_timestamp() WHERE "
+                    "allocation_id=:aid",
+                    aid=evidence.allocation_id,
+                )
+                released = True
+            elif row["state"] != "RELEASED":
+                raise DomainError("CLEANUP_NOT_AUTHORIZED")
+            if cleanup_job_id is not None:
+                jobs = (
+                    execute(
+                        db,
+                        "SELECT * FROM jobs WHERE job_id IN (:repair,:cleanup) "
+                        "ORDER BY job_id FOR UPDATE",
+                        repair=lease.job_id,
+                        cleanup=cleanup_job_id,
+                    )
+                    .mappings()
+                    .all()
+                )
+                by_id = {j["job_id"]: j for j in jobs}
+                self._validate_job(db, lease, "REPAIR", row["chunk_id"])
+                cleanup_job = by_id.get(cleanup_job_id)
+                if (
+                    cleanup_job is None
+                    or cleanup_job["kind"] != "CLEANUP"
+                    or cleanup_job["target_id"] != evidence.allocation_id
+                    or cleanup_job["payload"].get("allocation_id") != str(evidence.allocation_id)
+                ):
+                    raise DomainError("STALE_JOB")
+                if cleanup_job["state"] in ("READY", "RETRY"):
+                    execute(
+                        db,
+                        "UPDATE jobs SET state='DONE',lease_owner=NULL,lease_expires_at=NULL "
+                        "WHERE job_id=:job",
+                        job=cleanup_job_id,
+                    )
+            else:
+                job = self._validate_job(db, lease, "CLEANUP", evidence.allocation_id)
+                if job["payload"].get("allocation_id") != str(evidence.allocation_id):
+                    raise DomainError("STALE_JOB")
+                self._finish_domain_job(db, lease, "CLEANUP", evidence.allocation_id)
+            return released
+
+    def finish_released_cleanup(self, allocation_id: UUID, lease: JobLease):
+        """Close an allocation-level CLEANUP job when another path already released it."""
+        with self.transaction() as db:
+            row = (
+                execute(
+                    db,
+                    "SELECT a.*,p.upload_id FROM allocations a JOIN upload_parts p "
+                    "USING(chunk_id) WHERE allocation_id=:aid",
+                    aid=allocation_id,
+                )
+                .mappings()
+                .one()
+            )
+            self._lock_session(db, row["upload_id"])
+            execute(
+                db,
+                "SELECT chunk_id FROM upload_parts WHERE chunk_id=:chunk FOR UPDATE",
+                chunk=row["chunk_id"],
+            ).one()
+            row = (
+                execute(
+                    db,
+                    "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
+                    aid=allocation_id,
+                )
+                .mappings()
+                .one()
+            )
+            if row["state"] != "RELEASED":
+                raise DomainError("CLEANUP_NOT_AUTHORIZED")
+            job = self._validate_job(db, lease, "CLEANUP", allocation_id)
+            if job["payload"].get("allocation_id") != str(allocation_id):
+                raise DomainError("STALE_JOB")
+            self._finish_domain_job(db, lease, "CLEANUP", allocation_id)
+
     @staticmethod
     def _validate_cleanup_job(db, lease, file_id):
         return Repository._validate_job(db, lease, "CLEANUP", file_id)
@@ -2384,7 +2824,7 @@ class Repository:
     def worker_snapshot(self, job, lease):
         """Bounded identity snapshot; the returned data outlives this transaction."""
         with self.transaction() as db:
-            if job["kind"] == "RECONCILE":
+            if job["kind"] in ("RECONCILE", "REPAIR"):
                 part = dict(
                     execute(
                         db, "SELECT * FROM upload_parts WHERE chunk_id=:id", id=job["target_id"]
@@ -2393,7 +2833,34 @@ class Repository:
                     .one()
                 )
                 session = self.session(db, part["upload_id"])
-                result = dict(session=session, part=part, destinations=self._destinations(db, part))
+                if job["kind"] == "RECONCILE":
+                    result = dict(
+                        session=session, part=part, destinations=self._destinations(db, part)
+                    )
+                else:
+                    file = self._file(db, session["file_id"])
+                    result = dict(session=session, file=file, part=part)
+            elif job["kind"] == "CLEANUP" and "allocation_id" in job["payload"]:
+                row = (
+                    execute(
+                        db,
+                        """SELECT a.*,p.upload_id,n.host,n.port
+                        FROM allocations a
+                        JOIN upload_parts p USING(chunk_id)
+                        JOIN storage_nodes n ON n.node_id=a.node_id
+                        WHERE a.allocation_id=:id""",
+                        id=job["target_id"],
+                    )
+                    .mappings()
+                    .one()
+                )
+                if job["payload"].get("allocation_id") != str(job["target_id"]):
+                    raise DomainError("STALE_JOB")
+                session = self.session(db, row["upload_id"])
+                result = dict(
+                    session=session,
+                    allocation=dict(row, namespace_id=self.namespace_id),
+                )
             else:
                 session = dict(
                     execute(
@@ -2508,9 +2975,16 @@ class Repository:
                 "SELECT resource_key FROM admission_counters WHERE "
                 "resource_key='upload_sessions' FOR UPDATE",
             ).one()
-            if job["kind"] == "RECONCILE":
+            if job["kind"] in ("RECONCILE", "REPAIR"):
                 upload_id = execute(
                     db, "SELECT upload_id FROM upload_parts WHERE chunk_id=:id", id=job["target_id"]
+                ).scalar_one()
+            elif job["kind"] == "CLEANUP" and "allocation_id" in job["payload"]:
+                upload_id = execute(
+                    db,
+                    "SELECT p.upload_id FROM allocations a "
+                    "JOIN upload_parts p USING(chunk_id) WHERE a.allocation_id=:id",
+                    id=job["target_id"],
                 ).scalar_one()
             else:
                 upload_id = execute(
@@ -2526,7 +3000,7 @@ class Repository:
             exhausted = not waiting_for_read and current["attempts"] >= max_attempts
             if (
                 exhausted
-                and job["kind"] != "CLEANUP"
+                and job["kind"] not in ("CLEANUP", "REPAIR")
                 and session["state"] in ("OPEN", "FINALIZING")
             ):
                 execute(

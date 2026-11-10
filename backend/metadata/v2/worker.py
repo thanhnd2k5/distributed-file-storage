@@ -17,10 +17,32 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from metadata.v2.repository import DomainError, JobLease, Repository, positive
-from metadata.v2.storage_client import StorageClient
+from metadata.v2.storage_client import RepairSourceError, StorageClient
 
 log = logging.getLogger(__name__)
-KINDS = ("CLEANUP", "RECONCILE", "FINALIZE")
+KINDS = ("CLEANUP", "RECONCILE", "FINALIZE", "REPAIR")
+DEFINITIVE_DEST_STATUS = frozenset(
+    {
+        grpc.StatusCode.FAILED_PRECONDITION,
+        grpc.StatusCode.RESOURCE_EXHAUSTED,
+        grpc.StatusCode.DATA_LOSS,
+        grpc.StatusCode.INVALID_ARGUMENT,
+        grpc.StatusCode.ALREADY_EXISTS,
+        grpc.StatusCode.NOT_FOUND,
+        grpc.StatusCode.PERMISSION_DENIED,
+        grpc.StatusCode.UNIMPLEMENTED,
+    }
+)
+AMBIGUOUS_DEST_STATUS = frozenset(
+    {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.ABORTED,
+        grpc.StatusCode.CANCELLED,
+        grpc.StatusCode.UNKNOWN,
+        grpc.StatusCode.INTERNAL,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +57,7 @@ class WorkerConfig:
     shutdown_seconds: float = 30
     read_bytes_per_second: int = 64 * 1024**2
     jobs_per_kind: int = 2
+    repair_scan_seconds: float = 1.0
 
     def __post_init__(self):
         positive(self.slots, 8)
@@ -42,14 +65,20 @@ class WorkerConfig:
         positive(self.page_size, 8)
         positive(self.max_attempts, 100)
         positive(self.read_bytes_per_second)
-        positive(self.jobs_per_kind, 8)
+        positive(self.jobs_per_kind, 24 // len(KINDS))
         for value in (
             self.poll_seconds,
             self.renew_seconds,
             self.job_seconds,
             self.shutdown_seconds,
+            self.repair_scan_seconds,
         ):
-            if not math.isfinite(value) or value <= 0:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
                 raise ValueError("Worker durations must be finite and positive")
         if self.renew_seconds > 20:
             raise ValueError("Renew interval must leave margin within the 60s DB lease")
@@ -160,6 +189,8 @@ class Worker:
         self.executing, self.resident = {}, {}
         self.queues = {kind: deque() for kind in KINDS}
         self.claim_cursor = self.dispatch_cursor = 0
+        self.repair_cursor = None
+        self.next_repair_scan = 0.0
         self.read_budget = ReadBudget(self.config.read_bytes_per_second)
         self.shutdown_due = None
         self.consumer_slot = Lock()
@@ -206,7 +237,15 @@ class Worker:
                 self.hook("claimed")
                 snapshot = self.repo.worker_snapshot(job, lease)
                 session = snapshot["session"]
-                if job["kind"] != "CLEANUP" and session["state"] in (
+                if job["kind"] == "REPAIR":
+                    file = snapshot["file"]
+                    if file["state"] != "AVAILABLE" or (
+                        job["payload"].get("file_id"),
+                        job["payload"].get("version_id"),
+                    ) != (str(file["file_id"]), str(file["version_id"])):
+                        self.repo.finish_job(lease.job_id, lease.owner, lease.token)
+                        return None
+                elif job["kind"] != "CLEANUP" and session["state"] in (
                     "ABORTED",
                     "EXPIRED",
                     "FAILED",
@@ -219,9 +258,13 @@ class Worker:
                 if job["kind"] == "RECONCILE":
                     return (yield from self.reconcile(snapshot, lease, work, consumer_owner))
                 if job["kind"] == "CLEANUP":
+                    if "allocation" in snapshot:
+                        return self.cleanup_allocation(snapshot["allocation"], lease, work)
                     return (yield from self.cleanup(session, lease, work))
                 if job["kind"] == "FINALIZE":
                     return (yield from self.finalize(session, lease, work))
+                if job["kind"] == "REPAIR":
+                    return (yield from self.repair(snapshot, lease, work))
                 raise DomainError("UNSUPPORTED_JOB")
         except (DomainError, grpc.RpcError, grpc.FutureCancelledError, SQLAlchemyError) as exc:
             if self.stopping.is_set():
@@ -328,6 +371,170 @@ class Worker:
         work.check()
         self.repo.finish_cleanup(session["upload_id"], lease)
 
+    def cleanup_allocation(self, allocation, lease, work):
+        work.check()
+        if allocation["state"] == "RELEASED":
+            self.repo.finish_released_cleanup(allocation["allocation_id"], lease)
+            return False
+        self.hook("cleanup_intent")
+        proof = self.storage.unary("DeleteAllocation", allocation, work)
+        self.hook("delete_ack")
+        work.check()
+        released = self.repo.release_abandoned_allocation(proof, lease)
+        self.hook("release_committed")
+        return released
+
+    @staticmethod
+    def _is_definitive_dest_error(exc):
+        if isinstance(exc, RepairSourceError):
+            return False
+        if isinstance(exc, grpc.RpcError):
+            return exc.code() in DEFINITIVE_DEST_STATUS
+        return isinstance(exc, DomainError) and exc.code in (
+            "INVALID_STORAGE_ACK",
+            "INVALID_STORAGE_STREAM",
+        )
+
+    @staticmethod
+    def _is_ambiguous_dest_error(exc):
+        if isinstance(exc, RepairSourceError):
+            return False
+        return isinstance(exc, grpc.RpcError) and exc.code() in AMBIGUOUS_DEST_STATUS
+
+    def _should_abandon_repair_target(self, exc, chunk_id, version_id, attempted):
+        if self._is_definitive_dest_error(exc):
+            return True
+        if self._is_ambiguous_dest_error(exc):
+            return self.repo.repair_can_continue(chunk_id, version_id, exclude=attempted)
+        return False
+
+    def _abandon_repair_target(self, chunk_id, version_id, dest, lease, work):
+        work.check()
+        abandoned = self.repo.abandon_repair_destination(
+            chunk_id, version_id, lease, dest["allocation_id"]
+        )
+        self.hook("repair_abandoned")
+        try:
+            proof = self.storage.unary("DeleteAllocation", abandoned, work)
+            work.check()
+            self.repo.release_abandoned_allocation(
+                proof, lease, cleanup_job_id=abandoned["cleanup_job_id"]
+            )
+            self.hook("repair_cleanup_released")
+        except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
+            work.check()
+            if isinstance(exc, DomainError) and exc.code in (
+                "STALE_JOB",
+                "REPAIR_NOT_AVAILABLE",
+            ):
+                raise
+        yield
+
+    def _copy_chunk(self, part, version_id, dest, lease, work, attempted):
+        sources = self.repo.repair_sources(part["chunk_id"], version_id, lease)
+        if not sources:
+            raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
+        for idx, source in enumerate(sources):
+            try:
+                work.check()
+                proof = self.storage.copy(source, dest, work)
+                self.hook("repair_copied")
+                return proof
+            except RepairSourceError as exc:
+                work.check()
+                if idx + 1 < len(sources):
+                    if exc.store_opened:
+                        try:
+                            prepared = self.storage.unary("PrepareAllocation", dest, work)
+                            if prepared.state == "STORED":
+                                self.hook("repair_copied")
+                                return prepared
+                        except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as prep_exc:
+                            work.check()
+                            if self._should_abandon_repair_target(
+                                prep_exc, part["chunk_id"], version_id, attempted
+                            ):
+                                yield from self._abandon_repair_target(
+                                    part["chunk_id"], version_id, dest, lease, work
+                                )
+                                if self.repo.repair_can_continue(
+                                    part["chunk_id"], version_id, exclude=attempted
+                                ):
+                                    return None
+                            raise
+                        yield
+                    continue
+                raise DomainError("REPAIR_SOURCE_UNAVAILABLE") from exc
+            except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
+                work.check()
+                if self._is_ambiguous_dest_error(exc):
+                    try:
+                        inspected = self.storage.unary("InspectAllocation", dest, work)
+                        if inspected.state == "STORED":
+                            self.hook("repair_copied")
+                            return inspected
+                    except (grpc.RpcError, grpc.FutureCancelledError, DomainError):
+                        work.check()
+                if self._should_abandon_repair_target(exc, part["chunk_id"], version_id, attempted):
+                    yield from self._abandon_repair_target(
+                        part["chunk_id"], version_id, dest, lease, work
+                    )
+                    if self.repo.repair_can_continue(
+                        part["chunk_id"], version_id, exclude=attempted
+                    ):
+                        return None
+                raise
+
+    def repair(self, snapshot, lease, work):
+        part = snapshot["part"]
+        version_id = snapshot["file"]["version_id"]
+        attempted = set()
+        try:
+            while True:
+                work.check()
+                dest = self.repo.reserve_repair(
+                    part["chunk_id"], version_id, lease, exclude_nodes=attempted
+                )
+                if dest is None:
+                    return None
+                attempted.add(dest["node_id"])
+                self.hook("repair_intent")
+                try:
+                    work.check()
+                    prepared = self.storage.unary("PrepareAllocation", dest, work)
+                except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
+                    work.check()
+                    if self._should_abandon_repair_target(
+                        exc, part["chunk_id"], version_id, attempted
+                    ):
+                        yield from self._abandon_repair_target(
+                            part["chunk_id"], version_id, dest, lease, work
+                        )
+                        if self.repo.repair_can_continue(
+                            part["chunk_id"], version_id, exclude=attempted
+                        ):
+                            continue
+                    raise
+                yield
+                if prepared.state == "STORED":
+                    proof = prepared
+                else:
+                    proof = yield from self._copy_chunk(
+                        part, version_id, dest, lease, work, attempted
+                    )
+                    if proof is None:
+                        continue
+                work.check()
+                self.hook("before_confirm")
+                proof = self.repo.confirm_repair(part["chunk_id"], version_id, lease, proof)
+                self.hook("repair_committed")
+                return proof
+        except DomainError as exc:
+            if exc.code == "REPAIR_NOT_AVAILABLE":
+                self.repo.finish_job(lease.job_id, lease.owner, lease.token)
+                return None
+            raise
+
     def finalize(self, session, lease, work):
         digest, total, cursor = hashlib.sha256(), 0, -1
         while True:
@@ -362,6 +569,27 @@ class Worker:
         self.hook("published")
         return result
 
+    def _scan_repairs(self):
+        if self.stopping.is_set():
+            return
+        if self.repair_cursor is None and time.monotonic() < self.next_repair_scan:
+            return
+        page = self.repo.repair_scan_page(after=self.repair_cursor, limit=self.config.page_size)
+        for deficit in page["deficits"]:
+            if self.stopping.is_set():
+                return
+            if deficit["eligible_nodes"] <= 0:
+                log.warning(
+                    "V2 chunk has zero eligible repair sources: file=%s chunk=%s",
+                    deficit["file_id"],
+                    deficit["chunk_id"],
+                )
+                continue
+            self.repo.enqueue_repair(deficit["file_id"], deficit["version_id"], deficit["chunk_id"])
+        self.repair_cursor = page["next_after"]
+        if self.repair_cursor is None:
+            self.next_repair_scan = time.monotonic() + self.config.repair_scan_seconds
+
     def tick(self):
         for future in list(self.futures):
             if future.done():
@@ -377,6 +605,7 @@ class Worker:
             return
         self.repo.expire_sessions(self.config.page_size)
         self.repo.sweep_claims(self.config.page_size)
+        self._scan_repairs()
         # Per-kind claims prevent an older, continuously replenished backlog
         # from hiding the other kinds. Both claims and continuations are bounded.
         for offset in range(len(KINDS)):

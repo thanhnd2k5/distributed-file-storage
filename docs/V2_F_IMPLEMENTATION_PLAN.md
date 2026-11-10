@@ -1,7 +1,7 @@
 # Mốc F — automatic repair, rejoin và scrub
 
-Cập nhật 07/11/2026. F1 đã xác minh baseline trên PostgreSQL/gRPC. E1–E4 đã xác minh
-baseline ngày 06/11/2026. C5/browser/file 1–10 GiB vẫn tạm gác.
+Cập nhật 10/11/2026. F1 và F2 đã xác minh baseline trên PostgreSQL/gRPC. F3–F5, C5/browser
+và file 1–10 GiB vẫn tạm gác. E1–E4 đã xác minh baseline ngày 06/11/2026.
 
 Đọc cùng [thiết kế §6–7](V2_DESIGN.md), [schema](V2_METADATA_SCHEMA.md),
 [wire/API](V2_API_CONTRACTS.md) và [correctness](V2_CORRECTNESS.md).
@@ -12,10 +12,10 @@ Schema foundation đã có health/observation generation, incarnation, allocatio
 ledger và ba kind HEALTH/REPAIR/SCRUB. Storage có HealthCheck, ListAllocations,
 InspectAllocation và streaming Get/Store. Đây là nền tảng, chưa phải runtime F.
 
-Worker dispatch job CLEANUP/RECONCILE/FINALIZE. F1 dùng lịch poll riêng theo
+Worker dispatch bốn kind CLEANUP/RECONCILE/FINALIZE/REPAIR. F1 dùng lịch poll riêng theo
 `node_id` để giữ đúng một bản ghi bền vững mỗi node qua nhiều vòng poll. Kind
-HEALTH trong schema vẫn để dành, không cần ánh xạ `node_id` dạng chuỗi sang UUID
-của job hoặc tạo lịch sử job theo từng nhịp poll.
+HEALTH và SCRUB trong schema vẫn để dành; không ánh xạ `node_id` dạng chuỗi sang UUID
+của job hoặc tạo lịch sử job theo từng nhịp poll, và chưa bật scheduler SCRUB ở F2.
 
 | Phase | Phạm vi | Gate nhỏ nhất đủ |
 |---|---|---|
@@ -176,26 +176,73 @@ reconcile mất ACK. Ruff check và format đạt trên hai file Python thay đ�
 docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f2_intent.py tests/test_v2_f2_discovery.py tests/test_v2_c1.py::test_confirm_and_complete_enforce_current_replica_policy
 ```
 
+## F2 — thực thi copy, recovery và cleanup
+
+`StorageClient.copy` stream trực tiếp `GetChunk` → `StoreChunk` theo từng block
+giới hạn `<= 262144` byte dưới giới hạn tốc độ của `ReadBudget`, giữ lại block
+cuối trong RAM cho tới khi nhận `footer` khớp size/SHA-256 của manifest và
+`StopIteration` sạch (không đóng/commit `StoreChunk` nếu stream nguồn đứt trước
+EOF). Lỗi từ nguồn được tách riêng qua `RepairSourceError(store_opened=...)` để
+`Worker._copy_chunk` phân biệt lỗi nguồn và lỗi đích.
+
+Trong `Worker.repair`:
+
+1. `reserve_repair` chốt/tái sử dụng một allocation đích (`allocation_id`) và
+   tăng generation nếu job đổi lease; khi số replica/domain đạt lại policy thì bỏ
+   allocation dư (nếu có) qua `CLEANUP` và đóng job `REPAIR`.
+2. `PrepareAllocation` trên node đích cho phép tái sử dụng ngay allocation đã
+   `STORED` ở các trường hợp mất ACK sau `StoreChunk` mà không cần copy lại bytes.
+3. Khi gặp `RepairSourceError`, Worker chuyển sang nguồn kế tiếp (và gọi lại
+   `PrepareAllocation` nếu `StoreChunk` đã mở). Khi đích trả lỗi xác định
+   (`ENOSPC`/`RESOURCE_EXHAUSTED`, `FAILED_PRECONDITION`, ACK/stream không hợp lệ)
+   hoặc lỗi mạng/timeout có thể tiếp tục sang đích khác (`repair_can_continue`),
+   `abandon_repair_destination` chuyển allocation đích lỗi sang `DELETE_PENDING`
+   kèm job `CLEANUP` có `dedup_key = allocation:<allocation_id>`. Nếu đích còn
+   truy cập được thì `DeleteAllocation` chạy inline giải phóng charge ngay; nếu
+   đích đang rớt mạng thì charge vẫn giữ và `Worker.cleanup_allocation` thu hồi
+   khi node quay lại.
+4. `Worker._scan_repairs` quét định kỳ theo cursor `page_size` (log warning nếu
+   `eligible_nodes <= 0`, không tạo job rỗng). Job `DEAD` không cho `enqueue_repair`
+   tạo trùng backlog và tự wake `DEAD → RETRY` qua `_requeue_dead_repairs` khi
+   `activate_node`, node hồi `ACTIVE` trong `apply_health_poll`, hoặc tăng
+   `allocatable_bytes` trong `set_budget`. File `AVAILABLE` không bị chuyển thành
+   `FAILED` nếu repair cạn retry; tombstone (`DELETING`) vẫn thu hồi mọi allocation.
+5. `KINDS` mở rộng thành `("CLEANUP", "RECONCILE", "FINALIZE", "REPAIR")` và giới
+   hạn `jobs_per_kind <= 24 // len(KINDS)` (`6`), giữ nguyên ràng buộc loại trừ
+   tối đa 24 job đang giữ của E3.
+
 ## Evidence hiện tại
 
-Targeted Windows/Python 3.12: **19 passed** cho policy F1 và regression scheduler E3.
-Lệnh từ `backend/`:
+Targeted Windows/Python 3.12 (`.venv`):
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests/test_v2_f1.py tests/test_v2_e3.py
-```
+- `pytest -q tests/test_v2_f1.py tests/test_v2_e3.py` đạt **25 passed (0.12s)**
+  cho policy health F1 và logic thuần `WorkerConfig`/`ReadBudget`/`Work`/`Worker.close`.
+- `ruff check` và `ruff format --check` đạt trên cả 6 file Python thay đổi
+  (`repository.py`, `storage_client.py`, `worker.py`, `test_v2_e3.py`,
+  `test_v2_e3_integration.py`, `test_v2_f2_integration.py`).
 
-Ruff check và format đạt trên 9 file Python thay đổi.
+Focused integration trên Docker Linux/Python 3.12/PostgreSQL 16 + StorageService
+gRPC/SQLite thật (container `dfs-v2-tests-postgres-1` trạng thái healthy, truy
+vấn kiểm tra `dfs_v2_test|v2_test|1`, image `dfs-python-tests:dev` build lại từ
+source hiện tại):
 
-Focused integration Docker Linux/Python 3.12/PostgreSQL 16 với gRPC thật.
-Docker Desktop 29.8.2 truy cập được qua quyền ngoài sandbox. PostgreSQL test
-V2 được khởi động theo xác nhận, trạng thái healthy và truy vấn trả
-`dfs_v2_test|v2_test|1`. Image test build từ source F1 hiện tại.
+- **Gate F2 (discovery, intent, execution, recovery, cleanup, crash/cancel) & C1:**
+  ```powershell
+  docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f2_integration.py tests/test_v2_f2_discovery.py tests/test_v2_f2_intent.py tests/test_v2_c1.py::test_confirm_and_complete_enforce_current_replica_policy
+  ```
+  Đạt **23 passed (17.08s)**, bao phủ health→`DOWN` discovery có phân trang và đọc
+  lại byte-for-byte/SHA-256 chỉ từ replica mới, mất ACK + reclaim generation không
+  copy lại, `ENOSPC`/unreachable cleanup (`DELETE_PENDING` → `RELEASED`) và xoay
+  đích, truncate stream nhiều block (`262144 + 777` B) trước `footer` + `ReadBudget`
+  + nguồn lỗi cạn retry về `DEAD` / tự wake khi activate node mới, tombstone
+  trong lúc repair, `SIGKILL` ở 6 ranh giới crash, và graceful cancel khi tắt `Worker`.
+- **Gate hồi quy E3 4-kind fairness, F1 health & C2 lifecycle/SIGTERM:**
+  ```powershell
+  docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_e3_integration.py tests/test_v2_f1_integration.py tests/test_v2_c2.py::test_bounded_loop_cleanup_progress_and_shutdown tests/test_v2_c2.py::test_worker_entrypoint_sigterm_cancels_real_grpc_and_can_restart tests/test_v2_c2.py::test_exhausted_job_rechecks_lease_after_failure_domain_effects
+  ```
+  Đạt **21 passed (16.60s)**.
 
-- Gate F1, migration và placement đạt **10 passed, 32 deselected (1.70s)**,
-  gồm 6 ca F1 và 4 hồi quy trực tiếp.
-- Hồi quy lifecycle C2 và scheduler E3 đạt **5 passed (6.48s)**, gồm
-  SIGTERM/restart và ba trường hợp Worker tiến triển khi một kind bị giữ I/O.
-
-F1 hoàn tất baseline. F2 discovery, enqueue và intent đã có gate riêng ở trên.
-Chưa chạy full suite, smoke, repair copy hoặc rejoin gate.
+F1 và F2 hoàn tất baseline. Giới hạn đã kiểm: fixture dùng nhiều process cùng host
+trên Docker Linux, chưa chứng minh failover nhiều host vật lý; chưa chạy full
+backend suite, cluster smoke, F3 rejoin/inventory reconciliation, F4 scrub, F5 hay
+frontend/C5 checks.

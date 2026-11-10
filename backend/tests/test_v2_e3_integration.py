@@ -18,6 +18,8 @@ from test_v2_metadata import sql
 
 from metadata.v2.storage_client import StorageClient
 from metadata.v2.worker import KINDS, Worker, WorkerConfig
+from storage.v2.ledger import Ledger, Scope
+from storage.v2.server import create_server
 
 
 def until(predicate, seconds=8):
@@ -77,12 +79,59 @@ def running(worker, *release_events):
         assert all(not queue for queue in worker.queues.values())
 
 
+def add_node(repo, resources, root, node="node-2", *, domain=None, budget=300, chunk_limit=3):
+    inc = uuid4()
+    ledger = Ledger(
+        root / node,
+        Scope(str(repo.namespace_id), str(repo.epoch), node, str(inc)),
+        provision=True,
+        chunk_limit=chunk_limit,
+    )
+    server, port, executor = create_server(ledger, failure_domain=domain or node)
+    resources.append((ledger, server, executor))
+    server.start()
+    repo.provision_node(
+        node, inc, host="127.0.0.1", port=port, failure_domain=domain or node, budget=budget
+    )
+    repo.activate_node(node, inc, observed_namespace=repo.namespace_id, observed_epoch=repo.epoch)
+    return inc, port
+
+
 def seed(repo, kind, data=b"abc"):
     if kind == "RECONCILE":
         session = upload(repo, data)
         part = claim(repo, session, data=data)
         store(part, data)
         repo.uncertain(session["upload_id"], 0, part["claim_token"], part["revision"])
+    elif kind == "REPAIR":
+        session = confirmed(repo, data)
+        repo.complete_upload(session["upload_id"])
+        finalizer = Worker(repo)
+        try:
+            job = repo.claim_jobs(
+                finalizer.owner, 1, kinds=("FINALIZE",), target=session["file_id"]
+            )
+            assert len(job) == 1
+            assert finalizer.execute(job[0])["state"] == "COMPLETED"
+        finally:
+            finalizer.close()
+        part = sql(
+            repo,
+            "SELECT m.chunk_id,f.version_id FROM manifest_parts m JOIN files f USING (version_id) "
+            "WHERE f.file_id=:file ORDER BY m.part_index LIMIT 1",
+            file=session["file_id"],
+        )[0]
+        sql(
+            repo,
+            "UPDATE allocations SET replica_health='CORRUPT' WHERE allocation_id=("
+            "SELECT allocation_id FROM allocations WHERE chunk_id=:chunk "
+            "ORDER BY allocation_id LIMIT 1)",
+            chunk=part["chunk_id"],
+        )
+        job_id = repo.enqueue_repair(session["file_id"], part["version_id"], part["chunk_id"])
+        assert job_id is not None
+        job = sql(repo, "SELECT * FROM jobs WHERE job_id=:id", id=job_id)[0]
+        return session, job
     else:
         session = confirmed(repo, data)
         if kind == "CLEANUP":
@@ -102,8 +151,9 @@ def done(repo, job):
 
 
 @pytest.mark.parametrize("flood", KINDS)
-def test_each_kind_progresses_while_an_older_flood_holds_its_io_lane(cluster, flood):
-    repo, _ = cluster
+def test_each_kind_progresses_while_an_older_flood_holds_its_io_lane(cluster, tmp_path, flood):
+    repo, resources = cluster
+    add_node(repo, resources, tmp_path, "node-2")
     backlog = [seed(repo, flood)[1] for _ in range(4)]
     victims = [seed(repo, kind)[1] for kind in KINDS if kind != flood]
     sql(
@@ -128,6 +178,10 @@ def test_each_kind_progresses_while_an_older_flood_holds_its_io_lane(cluster, fl
         def read(self, d, digest, work):
             self.boundary(work)
             return super().read(d, digest, work)
+
+        def copy(self, source, dest, work):
+            self.boundary(work)
+            return super().copy(source, dest, work)
 
     worker = ObservedWorker(repo, storage=Flood(), config=WorkerConfig(poll_seconds=0.01))
     with running(worker, release):

@@ -10,10 +10,16 @@ from metadata.v2.repository import DomainError, JobLease
 from metadata.v2.worker import ReadBudget, Work, Worker, WorkerConfig
 
 
-@pytest.mark.parametrize("value", [0, -1, 9, True, 1.5])
+@pytest.mark.parametrize("value", [0, -1, 7, 9, True, 1.5])
 def test_resident_jobs_have_a_finite_per_kind_cap(value):
     with pytest.raises(ValueError):
         WorkerConfig(jobs_per_kind=value)
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True])
+def test_repair_scan_interval_must_be_finite_and_positive(value):
+    with pytest.raises(ValueError):
+        WorkerConfig(repair_scan_seconds=value)
 
 
 @pytest.mark.parametrize("size", [0, -1, 262145, True, 1.5])

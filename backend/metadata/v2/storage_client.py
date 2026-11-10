@@ -1,6 +1,7 @@
 """Worker-only V2 transport. One channel/call per operation; no unbounded cache."""
 
 import hashlib
+from threading import Event
 from uuid import UUID
 
 import grpc
@@ -9,6 +10,12 @@ import v2_storage_pb2_grpc as rpc
 
 from metadata.v2.health import HealthObservation
 from metadata.v2.repository import AllocationEvidence, DeleteEvidence, DomainError
+
+
+class RepairSourceError(DomainError):
+    def __init__(self, code="REPAIR_SOURCE_UNAVAILABLE", *, store_opened=False):
+        self.store_opened = store_opened
+        super().__init__(code)
 
 
 def scope_for(d):
@@ -208,3 +215,218 @@ class StorageClient:
             finally:
                 work.detach(call)
                 call.cancel()
+
+    def _store_single(self, dest, block, work):
+        work.check()
+        frames = [
+            pb.StoreChunkFrame(
+                header=pb.StoreChunkHeader(
+                    key=key_for(dest), generation=dest["generation"], chunk=spec_for(dest)
+                )
+            ),
+            pb.StoreChunkFrame(block=pb.DataBlock(offset=block[0], data=block[1])),
+        ]
+        with self.channel(dest) as channel:
+            call = rpc.StorageServiceStub(channel).StoreChunk.future(
+                iter(frames), timeout=self.timeout
+            )
+            work.attach(call)
+            try:
+                response = call.result()
+                work.check()
+                return evidence(response.allocation, dest)
+            finally:
+                work.detach(call)
+                call.cancel()
+
+    def copy(self, source, dest, work):
+        """Stream one verified chunk GetChunk -> StoreChunk keeping bounded wire buffers.
+
+        Holds back the trailing pending block until both footer and EOF match spec
+        so the destination never sees the final byte of a corrupt/truncated source.
+        """
+        work.check()
+        if (source["chunk_id"], source["size_bytes"], source["checksum_sha256"]) != (
+            dest["chunk_id"],
+            dest["size_bytes"],
+            dest["checksum_sha256"],
+        ):
+            raise DomainError("INVALID_STORAGE_ACK")
+        remaining = source["size_bytes"]
+        while remaining:
+            block = min(262144, remaining)
+            work.consume(block)
+            remaining -= block
+        work.check()
+        with self.channel(source) as source_channel:
+            get_call = rpc.StorageServiceStub(source_channel).GetChunk(
+                pb.GetChunkRequest(key=key_for(source), expected_chunk=spec_for(source)),
+                timeout=self.timeout,
+            )
+            work.attach(get_call)
+            total = 0
+            chunk_hash = hashlib.sha256()
+            header = False
+            footer = False
+            pending = None
+            prefetched = None
+            eof_verified = False
+            try:
+                get_iter = iter(get_call)
+                try:
+                    while True:
+                        work.check()
+                        try:
+                            frame = next(get_iter)
+                        except StopIteration:
+                            if not header or not footer or pending is None:
+                                raise RepairSourceError("INVALID_STORAGE_STREAM")
+                            eof_verified = True
+                            break
+                        kind = frame.WhichOneof("payload")
+                        if kind == "header" and not header and total == 0 and not footer:
+                            if evidence(frame.header, source).state != "STORED":
+                                raise RepairSourceError("INVALID_STORAGE_STREAM")
+                            header = True
+                        elif kind == "block" and header and not footer:
+                            block = frame.block
+                            if (
+                                block.offset != total
+                                or not 0 < len(block.data) <= 262144
+                                or total + len(block.data) > source["size_bytes"]
+                            ):
+                                raise RepairSourceError("INVALID_STORAGE_STREAM")
+                            chunk_hash.update(block.data)
+                            total += len(block.data)
+                            item = (block.offset, block.data)
+                            if pending is None:
+                                pending = item
+                            else:
+                                prefetched = item
+                                break
+                        elif kind == "footer" and header and not footer and pending is not None:
+                            if (total, chunk_hash.hexdigest()) != (
+                                source["size_bytes"],
+                                source["checksum_sha256"],
+                            ) or (
+                                frame.footer.actual_size_bytes,
+                                frame.footer.actual_checksum_sha256,
+                            ) != (total, chunk_hash.hexdigest()):
+                                raise RepairSourceError("INVALID_STORAGE_STREAM")
+                            footer = True
+                        else:
+                            raise RepairSourceError("INVALID_STORAGE_STREAM")
+                except RepairSourceError:
+                    raise
+                except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
+                    work.check()
+                    raise RepairSourceError(store_opened=False) from exc
+
+                if eof_verified:
+                    work.detach(get_call)
+                    get_call.cancel()
+                    return self._store_single(dest, pending, work)
+
+                closing = Event()
+                source_error = None
+
+                def store_frames():
+                    nonlocal total, footer, source_error
+                    current = pending
+                    nxt = prefetched
+                    try:
+                        yield pb.StoreChunkFrame(
+                            header=pb.StoreChunkHeader(
+                                key=key_for(dest),
+                                generation=dest["generation"],
+                                chunk=spec_for(dest),
+                            )
+                        )
+                        yield pb.StoreChunkFrame(
+                            block=pb.DataBlock(offset=current[0], data=current[1])
+                        )
+                        current = nxt
+                        nxt = None
+                        while True:
+                            work.check()
+                            try:
+                                frame = next(get_iter)
+                            except StopIteration:
+                                if not footer:
+                                    raise RepairSourceError(
+                                        "INVALID_STORAGE_STREAM", store_opened=True
+                                    )
+                                yield pb.StoreChunkFrame(
+                                    block=pb.DataBlock(offset=current[0], data=current[1])
+                                )
+                                return
+                            except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
+                                if closing.is_set():
+                                    return
+                                raise RepairSourceError(store_opened=True) from exc
+                            kind = frame.WhichOneof("payload")
+                            if kind == "block" and not footer:
+                                block = frame.block
+                                if (
+                                    block.offset != total
+                                    or not 0 < len(block.data) <= 262144
+                                    or total + len(block.data) > source["size_bytes"]
+                                ):
+                                    raise RepairSourceError(
+                                        "INVALID_STORAGE_STREAM", store_opened=True
+                                    )
+                                chunk_hash.update(block.data)
+                                total += len(block.data)
+                                yield pb.StoreChunkFrame(
+                                    block=pb.DataBlock(offset=current[0], data=current[1])
+                                )
+                                current = (block.offset, block.data)
+                            elif kind == "footer" and not footer:
+                                if (total, chunk_hash.hexdigest()) != (
+                                    source["size_bytes"],
+                                    source["checksum_sha256"],
+                                ) or (
+                                    frame.footer.actual_size_bytes,
+                                    frame.footer.actual_checksum_sha256,
+                                ) != (total, chunk_hash.hexdigest()):
+                                    raise RepairSourceError(
+                                        "INVALID_STORAGE_STREAM", store_opened=True
+                                    )
+                                footer = True
+                            else:
+                                raise RepairSourceError("INVALID_STORAGE_STREAM", store_opened=True)
+                    except BaseException as exc:
+                        if not closing.is_set():
+                            source_error = exc
+                        raise
+
+                with self.channel(dest) as dest_channel:
+                    store_call = rpc.StorageServiceStub(dest_channel).StoreChunk.future(
+                        store_frames(), timeout=self.timeout
+                    )
+                    work.attach(store_call)
+                    try:
+                        response = store_call.result()
+                        work.check()
+                        if source_error is not None:
+                            if isinstance(source_error, RepairSourceError):
+                                raise source_error
+                            raise RepairSourceError(store_opened=True) from source_error
+                        return evidence(response.allocation, dest)
+                    except BaseException:
+                        closing.set()
+                        get_call.cancel()
+                        store_call.cancel()
+                        work.check()
+                        if source_error is not None:
+                            if isinstance(source_error, RepairSourceError):
+                                raise source_error
+                            raise RepairSourceError(store_opened=True) from source_error
+                        raise
+                    finally:
+                        closing.set()
+                        work.detach(store_call)
+                        store_call.cancel()
+            finally:
+                work.detach(get_call)
+                get_call.cancel()
