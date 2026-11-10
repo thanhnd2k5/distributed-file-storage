@@ -1188,13 +1188,14 @@ class Repository:
         ).all()
 
     @staticmethod
-    def _allocations(db, part):
+    def _allocations(db, part, *, lock=True):
         return [
             dict(row)
             for row in execute(
                 db,
                 "SELECT * FROM allocations WHERE "
-                "chunk_id=:chunk AND state!='RELEASED' ORDER BY allocation_id FOR UPDATE",
+                "chunk_id=:chunk AND state!='RELEASED' ORDER BY allocation_id"
+                + (" FOR UPDATE" if lock else ""),
                 chunk=part["chunk_id"],
             ).mappings()
         ]
@@ -1259,11 +1260,22 @@ class Repository:
         return by_id
 
     def _enough_replicas(self, db, session, chunk_id):
-        counts = (
+        return self._meets_replica_policy(self._replica_counts(db, chunk_id), session)
+
+    @staticmethod
+    def _meets_replica_policy(counts, policy):
+        return (
+            counts["nodes"] >= policy["replication_factor"]
+            and counts["domains"] >= policy["min_distinct_domains"]
+        )
+
+    def _replica_counts(self, db, chunk_id):
+        return (
             execute(
                 db,
                 """SELECT count(DISTINCT a.node_id) AS nodes,
-            count(DISTINCT a.failure_domain_snapshot) AS domains
+            count(DISTINCT a.failure_domain_snapshot) AS domains,
+            array_agg(DISTINCT a.failure_domain_snapshot) AS domain_names
             FROM allocations a JOIN upload_parts p USING(chunk_id)
             JOIN storage_nodes n ON n.node_id=a.node_id AND n.active_incarnation=a.incarnation
             JOIN node_incarnations i ON i.node_id=a.node_id AND i.incarnation=a.incarnation
@@ -1277,10 +1289,278 @@ class Repository:
             .mappings()
             .one()
         )
+
+    def repair_scan_page(self, *, after=None, limit=8):
+        """Bound work by manifest parts examined, including healthy and terminal files."""
+        positive(limit, 8)
+        cursor = "WHERE (m.version_id,m.part_index)>(:version,:index)" if after else ""
+        with self.transaction() as db:
+            rows = (
+                execute(
+                    db,
+                    f"""SELECT m.version_id,m.part_index,m.chunk_id,f.file_id,f.state,
+                          s.replication_factor,s.min_distinct_domains
+                FROM manifest_parts m JOIN files f USING (version_id)
+                JOIN upload_sessions s USING (file_id)
+                {cursor}
+                ORDER BY m.version_id,m.part_index LIMIT :limit""",
+                    version=after[0] if after else None,
+                    index=after[1] if after else -1,
+                    limit=limit + 1,
+                )
+                .mappings()
+                .all()
+            )
+            deficits = []
+            for row in rows[:limit]:
+                if row["state"] != "AVAILABLE":
+                    continue
+                counts = self._replica_counts(db, row["chunk_id"])
+                if not self._meets_replica_policy(counts, row):
+                    deficits.append(
+                        dict(
+                            file_id=row["file_id"],
+                            version_id=row["version_id"],
+                            chunk_id=row["chunk_id"],
+                            part_index=row["part_index"],
+                            eligible_nodes=counts["nodes"],
+                            eligible_domains=counts["domains"],
+                        )
+                    )
+            return dict(
+                deficits=deficits,
+                next_after=(rows[limit - 1]["version_id"], rows[limit - 1]["part_index"])
+                if len(rows) > limit
+                else None,
+            )
+
+    def enqueue_repair(self, file_id, version_id, chunk_id):
+        """Recheck a discovery result against the file and current replica policy."""
+        with self.transaction() as db:
+            file = self._file(db, file_id, lock=True)
+            if file["state"] != "AVAILABLE" or file["version_id"] != version_id:
+                return None
+            policy = (
+                execute(
+                    db,
+                    """SELECT s.replication_factor,s.min_distinct_domains
+                FROM upload_sessions s JOIN manifest_parts m ON m.version_id=:version
+                WHERE s.file_id=:file AND m.chunk_id=:chunk""",
+                    version=version_id,
+                    file=file_id,
+                    chunk=chunk_id,
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if policy is None:
+                return None
+            counts = self._replica_counts(db, chunk_id)
+            if not counts["nodes"] or self._meets_replica_policy(counts, policy):
+                return None
+            return self.enqueue(
+                db,
+                "REPAIR",
+                chunk_id,
+                payload=dict(file_id=str(file_id), version_id=str(version_id)),
+            )
+
+    def _lock_repair_part(self, db, chunk_id, version_id):
+        row = execute(
+            db,
+            """SELECT p.upload_id,p.part_index FROM manifest_parts m
+            JOIN upload_parts p USING (chunk_id)
+            WHERE m.version_id=:version AND m.chunk_id=:chunk""",
+            version=version_id,
+            chunk=chunk_id,
+        ).one_or_none()
+        if row is None:
+            raise DomainError("REPAIR_NOT_AVAILABLE")
+        session = self._lock_session(db, row.upload_id)
+        file = self._file(db, session["file_id"])
+        if file["state"] != "AVAILABLE" or file["version_id"] != version_id:
+            raise DomainError("REPAIR_NOT_AVAILABLE")
+        return session, self._lock_part(db, row.upload_id, row.part_index)
+
+    def _repair_targets(self, db):
         return (
-            counts["nodes"] >= session["replication_factor"]
-            and counts["domains"] >= session["min_distinct_domains"]
+            execute(
+                db,
+                """SELECT n.node_id,n.active_incarnation AS incarnation,
+                          n.host,n.port,n.failure_domain
+            FROM storage_nodes n JOIN node_incarnations i
+            ON i.node_id=n.node_id AND i.incarnation=n.active_incarnation
+            WHERE n.enabled AND n.health_state='ACTIVE' AND i.state='ACTIVE'
+            AND i.recovery_epoch=:epoch ORDER BY n.node_id FOR SHARE OF n,i""",
+                epoch=self.epoch,
+            )
+            .mappings()
+            .all()
         )
+
+    def reserve_repair(self, chunk_id, version_id, lease: JobLease):
+        """Persist one destination before I/O. A reclaimed job reuses its charge."""
+        with self.transaction() as db:
+            session, part = self._lock_repair_part(db, chunk_id, version_id)
+            targets = self._repair_targets(db)
+            counts = self._replica_counts(db, chunk_id)
+            # File lock serializes payload changes by reserve/confirm. A claim
+            # can still change the lease, so validate it after domain row locks.
+            payload = execute(
+                db, "SELECT payload FROM jobs WHERE job_id=:job", job=lease.job_id
+            ).scalar_one_or_none()
+            if payload is None or (payload.get("file_id"), payload.get("version_id")) != (
+                str(session["file_id"]),
+                str(version_id),
+            ):
+                raise DomainError("STALE_JOB")
+            aid = payload.get("allocation_id")
+            allocations = self._allocations(db, part, lock=aid is not None)
+            if aid is not None:
+                allocation = next((a for a in allocations if str(a["allocation_id"]) == aid), None)
+                if allocation is None or allocation["state"] not in ("RESERVED", "UNKNOWN"):
+                    raise DomainError("REPAIR_INTENT_CONFLICT")
+                target = next(
+                    (
+                        n
+                        for n in targets
+                        if (n["node_id"], n["incarnation"], n["failure_domain"])
+                        == (
+                            allocation["node_id"],
+                            allocation["incarnation"],
+                            allocation["failure_domain_snapshot"],
+                        )
+                    ),
+                    None,
+                )
+                if target is None:
+                    raise DomainError("REPAIR_DESTINATION_UNAVAILABLE")
+                job = self._validate_job(db, lease, "REPAIR", chunk_id)
+                aid = allocation["allocation_id"]
+                generation = allocation["generation"]
+                if payload["intent_fence"] != lease.token:
+                    generation += 1
+                    execute(
+                        db,
+                        "UPDATE allocations SET generation=:generation,state='UNKNOWN' "
+                        "WHERE allocation_id=:aid",
+                        aid=aid,
+                        generation=generation,
+                    )
+            else:
+                if self._meets_replica_policy(counts, session):
+                    self._finish_domain_job(db, lease, "REPAIR", chunk_id)
+                    return None
+                if not counts["nodes"]:
+                    raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
+                target = self._charge_repair_target(db, targets, counts, session, part, allocations)
+                job = self._validate_job(db, lease, "REPAIR", chunk_id)
+                aid, generation = uuid4(), 1
+                execute(
+                    db,
+                    """INSERT INTO allocations (allocation_id,chunk_id,node_id,incarnation,
+                    recovery_epoch,generation,failure_domain_snapshot,charged_bytes,state,
+                    replica_health,observation_generation)
+                    VALUES (:aid,:chunk,:node,:inc,:epoch,1,:domain,:size,
+                    'RESERVED','UNKNOWN',0)""",
+                    aid=aid,
+                    chunk=chunk_id,
+                    node=target["node_id"],
+                    inc=target["incarnation"],
+                    epoch=self.epoch,
+                    domain=target["failure_domain"],
+                    size=part["size_bytes"],
+                )
+            if payload.get("intent_fence") != lease.token:
+                execute(
+                    db,
+                    """INSERT INTO write_attempts (attempt_id,allocation_id,generation,
+                    owner_token,state,lease_expires_at)
+                    VALUES (:attempt,:aid,:generation,:job,'INTENDED',:expires)""",
+                    attempt=uuid4(),
+                    aid=aid,
+                    generation=generation,
+                    job=lease.job_id,
+                    expires=job["lease_expires_at"],
+                )
+                changed = execute(
+                    db,
+                    """UPDATE jobs SET payload=CAST(:payload AS jsonb)
+                    WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
+                    job=lease.job_id,
+                    payload=json.dumps(
+                        dict(payload, allocation_id=str(aid), intent_fence=lease.token)
+                    ),
+                ).rowcount
+                if not changed:
+                    raise DomainError("STALE_JOB")
+            return dict(
+                target,
+                allocation_id=aid,
+                generation=generation,
+                chunk_id=chunk_id,
+                namespace_id=self.namespace_id,
+                recovery_epoch=self.epoch,
+                size_bytes=part["size_bytes"],
+                checksum_sha256=part["checksum_sha256"],
+            )
+
+    @staticmethod
+    def _charge_repair_target(db, targets, counts, session, part, allocations):
+        existing_nodes = {a["node_id"] for a in allocations}
+        domains = set(counts["domain_names"])
+        candidates = [
+            n
+            for n in targets
+            if n["node_id"] not in existing_nodes
+            and (
+                counts["domains"] >= session["min_distinct_domains"]
+                or n["failure_domain"] not in domains
+            )
+        ]
+        for node in candidates:
+            if execute(
+                db,
+                """UPDATE node_budgets SET charged_bytes=charged_bytes+:size,revision=revision+1
+                WHERE node_id=:node AND incarnation=:inc
+                  AND allocatable_bytes-charged_bytes>=:size""",
+                node=node["node_id"],
+                inc=node["incarnation"],
+                size=part["size_bytes"],
+            ).rowcount:
+                return node
+        raise DomainError("REPAIR_DESTINATION_UNAVAILABLE")
+
+    def confirm_repair(self, chunk_id, version_id, lease: JobLease, proof: AllocationEvidence):
+        """Publish only the live job's exact durable STORED acknowledgment."""
+        with self.transaction() as db:
+            _, part = self._lock_repair_part(db, chunk_id, version_id)
+            targets = self._repair_targets(db)
+            allocations = self._allocations(db, part)
+            job = self._validate_job(db, lease, "REPAIR", chunk_id)
+            payload = job["payload"]
+            if (payload.get("intent_fence"), payload.get("allocation_id")) != (
+                lease.token,
+                str(proof.allocation_id),
+            ):
+                raise DomainError("STALE_JOB")
+            allocation = next(
+                (a for a in allocations if a["allocation_id"] == proof.allocation_id), None
+            )
+            if allocation is None or not any(
+                (n["node_id"], n["incarnation"], n["failure_domain"])
+                == (
+                    allocation["node_id"],
+                    allocation["incarnation"],
+                    allocation["failure_domain_snapshot"],
+                )
+                for n in targets
+            ):
+                raise DomainError("REPAIR_DESTINATION_UNAVAILABLE")
+            repair_part = dict(part, claim_token=lease.job_id)
+            by_id = self._check_acks(db, repair_part, [allocation], [proof])
+            self._record_acks(db, repair_part, [allocation], by_id)
+            self._finish_domain_job(db, lease, "REPAIR", chunk_id)
 
     def _record_acks(self, db, part, allocations, by_id):
         for allocation in allocations:

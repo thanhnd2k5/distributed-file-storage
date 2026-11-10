@@ -128,6 +128,54 @@ bị ảnh hưởng khi tăng kind hoặc process count. Muốn phục hồi RF=
 khi mất một node cần domain đích còn hoạt động và đủ dung lượng. Fixture nhiều
 process cùng host chỉ chứng minh logic này, chưa chứng minh chịu mất host.
 
+## F2 — discovery và enqueue
+
+Metadata có hai transaction cho bước đầu F2. `repair_scan_page` đọc tối đa
+tám manifest part theo cursor `(version_id,part_index)`. Cursor đi qua cả
+part đủ replica và file terminal để một trang không có deficit vẫn tiếp tục
+được. Chỉ báo deficit của file AVAILABLE theo RF và số failure domain của
+session, dùng cùng tiêu chí replica hợp lệ với finalize.
+
+`enqueue_repair` khóa file rồi kiểm lại version, chunk, deficit và ít nhất
+một nguồn hợp lệ. Job dùng chunk ID làm dedup key. Hai transaction enqueue
+đồng thời nhận cùng job ID. Discovery báo cả chunk không còn nguồn để vận hành
+nhận biết tình trạng đó. Enqueue chưa cấp reservation.
+
+Worker chưa chạy discovery định kỳ hay dispatch REPAIR. Chỉ bật scheduler
+sau khi có đường copy, reconcile mất ACK và cleanup đích thất bại.
+
+Focused integration trên Docker Linux/Python 3.12/PostgreSQL 16 đạt
+**11 passed (2.67s)**, gồm 3 ca discovery/dedup và 8 hồi quy C1 về replica
+policy, finalize và manifest. Ruff đạt trên hai file Python thay đổi.
+
+```powershell
+docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f2_discovery.py tests/test_v2_c1.py::test_finalize_rechecks_replica_manifest_and_revision tests/test_v2_c1.py::test_confirm_and_complete_enforce_current_replica_policy
+```
+
+## F2 — reservation và write intent
+
+`reserve_repair` khóa file/session/part, kiểm lại đích theo incarnation và
+failure domain, rồi ghi allocation, charge và write attempt cùng transaction
+trước RPC. Khi cần khôi phục số domain, đích phải thêm một domain còn thiếu.
+Hiện chỉ chọn node chưa giữ allocation chưa release của chunk đó.
+
+Payload của job giữ allocation ID và fencing token đã cấp intent. Cùng lease
+trả lại cùng intent. Lease mới giữ allocation và charge cũ, tăng generation
+để Worker tiếp theo có thể fence writer cũ ở Storage trước khi tiếp tục.
+`confirm_repair` kiểm file còn AVAILABLE, job lease, incarnation, generation
+và nội dung ACK trước khi xác nhận allocation STORED và đóng job. Nếu file
+bị tombstone, cleanup hiện có tiếp quản allocation và chỉ trả charge sau
+durable Delete ACK.
+
+Focused integration Docker Linux/Python 3.12/PostgreSQL 16 đạt
+**10 passed (2.37s)**, gồm 4 ca intent mới, 3 ca discovery và 3 hồi quy C1.
+Gate này dùng ACK fixture để kiểm transaction. Chưa chạy copy qua gRPC hoặc
+reconcile mất ACK. Ruff check và format đạt trên hai file Python thay đổi.
+
+```powershell
+docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f2_intent.py tests/test_v2_f2_discovery.py tests/test_v2_c1.py::test_confirm_and_complete_enforce_current_replica_policy
+```
+
 ## Evidence hiện tại
 
 Targeted Windows/Python 3.12: **19 passed** cho policy F1 và regression scheduler E3.
@@ -149,5 +197,5 @@ V2 được khởi động theo xác nhận, trạng thái healthy và truy vấ
 - Hồi quy lifecycle C2 và scheduler E3 đạt **5 passed (6.48s)**, gồm
   SIGTERM/restart và ba trường hợp Worker tiến triển khi một kind bị giữ I/O.
 
-F1 hoàn tất baseline.
+F1 hoàn tất baseline. F2 discovery, enqueue và intent đã có gate riêng ở trên.
 Chưa chạy full suite, smoke, repair copy hoặc rejoin gate.
