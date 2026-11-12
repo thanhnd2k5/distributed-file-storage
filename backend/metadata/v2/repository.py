@@ -1548,11 +1548,166 @@ class Repository:
             chunk=chunk_id,
             node=target["node_id"],
             inc=target["incarnation"],
-            epoch=part["recovery_epoch"] if "recovery_epoch" in part else target["recovery_epoch"],
+            epoch=target["recovery_epoch"],
             domain=target["failure_domain"],
             size=part["size_bytes"],
         )
         return aid, 1
+
+    @staticmethod
+    def _lock_allocation_row(db, allocation_id):
+        return (
+            execute(
+                db,
+                "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
+                aid=allocation_id,
+            )
+            .mappings()
+            .one()
+        )
+
+    def _drop_surplus_repair_intent(
+        self, db, session, part, allocation, payload, tried_nodes, version_id, lease, chunk_id
+    ):
+        allocation = self._lock_allocation_row(db, allocation["allocation_id"])
+        self._abandon_allocation_in_tx(db, session, part, allocation, tried_nodes, version_id)
+        cleared = self._cleared_repair_payload(payload, tried_nodes)
+        self._validate_job(db, lease, "REPAIR", chunk_id)
+        if not execute(
+            db,
+            """UPDATE jobs SET payload=CAST(:payload AS jsonb)
+            WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
+            job=lease.job_id,
+            payload=json.dumps(cleared),
+        ).rowcount:
+            raise DomainError("STALE_JOB")
+        self._finish_domain_job(db, lease, "REPAIR", chunk_id)
+
+    def _reuse_repair_intent(self, db, lease, payload, allocation, chunk_id):
+        allocation = self._lock_allocation_row(db, allocation["allocation_id"])
+        job = self._validate_job(db, lease, "REPAIR", chunk_id)
+        aid = allocation["allocation_id"]
+        generation = allocation["generation"]
+        if payload["intent_fence"] != lease.token:
+            generation += 1
+            execute(
+                db,
+                "UPDATE allocations SET generation=:generation,state='UNKNOWN' "
+                "WHERE allocation_id=:aid",
+                aid=aid,
+                generation=generation,
+            )
+        return allocation, aid, generation, job, payload
+
+    def _replace_repair_destination(
+        self,
+        db,
+        session,
+        part,
+        allocation,
+        payload,
+        tried_nodes,
+        version_id,
+        lease,
+        chunk_id,
+        targets,
+        counts,
+        allocations,
+        exclude_nodes,
+    ):
+        if not counts["nodes"]:
+            raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
+        replacement = self._charge_repair_target(
+            db,
+            targets,
+            counts,
+            session,
+            part,
+            allocations,
+            exclude=exclude_nodes,
+            tried_nodes=tried_nodes,
+        )
+        allocation = self._lock_allocation_row(db, allocation["allocation_id"])
+        self._abandon_allocation_in_tx(db, session, part, allocation, tried_nodes, version_id)
+        payload = self._cleared_repair_payload(payload, tried_nodes)
+        job = self._validate_job(db, lease, "REPAIR", chunk_id)
+        aid, generation = self._create_repair_allocation(
+            db, chunk_id, dict(replacement, recovery_epoch=self.epoch), part
+        )
+        return replacement, aid, generation, job, payload
+
+    def _new_repair_destination(
+        self,
+        db,
+        session,
+        part,
+        lease,
+        chunk_id,
+        targets,
+        counts,
+        allocations,
+        exclude_nodes,
+        tried_nodes,
+    ):
+        if self._meets_replica_policy(counts, session):
+            self._finish_domain_job(db, lease, "REPAIR", chunk_id)
+            return None
+        if not counts["nodes"]:
+            raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
+        target = self._charge_repair_target(
+            db,
+            targets,
+            counts,
+            session,
+            part,
+            allocations,
+            exclude=exclude_nodes,
+            tried_nodes=tried_nodes,
+        )
+        job = self._validate_job(db, lease, "REPAIR", chunk_id)
+        aid, generation = self._create_repair_allocation(
+            db, chunk_id, dict(target, recovery_epoch=self.epoch), part
+        )
+        return target, aid, generation, job
+
+    @staticmethod
+    def _bind_repair_intent(db, lease, payload, tried_nodes, aid, generation, job):
+        if payload.get("intent_fence") == lease.token:
+            return
+        execute(
+            db,
+            """INSERT INTO write_attempts (attempt_id,allocation_id,generation,
+            owner_token,state,lease_expires_at)
+            VALUES (:attempt,:aid,:generation,:job,'INTENDED',:expires)""",
+            attempt=uuid4(),
+            aid=aid,
+            generation=generation,
+            job=lease.job_id,
+            expires=job["lease_expires_at"],
+        )
+        new_payload = dict(payload, allocation_id=str(aid), intent_fence=lease.token)
+        if tried_nodes:
+            new_payload["tried_nodes"] = tried_nodes
+        if not execute(
+            db,
+            """UPDATE jobs SET payload=CAST(:payload AS jsonb)
+            WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
+            job=lease.job_id,
+            payload=json.dumps(new_payload),
+        ).rowcount:
+            raise DomainError("STALE_JOB")
+
+    def _repair_destination_view(self, target, aid, generation, chunk_id, part):
+        return dict(
+            target,
+            allocation_id=aid,
+            generation=generation,
+            chunk_id=chunk_id,
+            namespace_id=self.namespace_id,
+            recovery_epoch=self.epoch,
+            size_bytes=part["size_bytes"],
+            checksum_sha256=part["checksum_sha256"],
+        )
 
     def reserve_repair(self, chunk_id, version_id, lease: JobLease, *, exclude_nodes=()):
         """Persist one destination before I/O. A reclaimed job reuses its charge."""
@@ -1570,37 +1725,25 @@ class Repository:
                 str(version_id),
             ):
                 raise DomainError("STALE_JOB")
-            aid = payload.get("allocation_id")
             allocations = self._allocations(db, part, lock=False)
             tried_nodes = list(payload.get("tried_nodes", ()))
+            aid = payload.get("allocation_id")
             if aid is not None:
                 allocation = next((a for a in allocations if str(a["allocation_id"]) == aid), None)
                 if allocation is None or allocation["state"] not in ("RESERVED", "UNKNOWN"):
                     raise DomainError("REPAIR_INTENT_CONFLICT")
                 if self._meets_replica_policy(counts, session):
-                    allocation = (
-                        execute(
-                            db,
-                            "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
-                            aid=allocation["allocation_id"],
-                        )
-                        .mappings()
-                        .one()
-                    )
-                    self._abandon_allocation_in_tx(
-                        db, session, part, allocation, tried_nodes, version_id
-                    )
-                    cleared = self._cleared_repair_payload(payload, tried_nodes)
-                    self._validate_job(db, lease, "REPAIR", chunk_id)
-                    if not execute(
+                    self._drop_surplus_repair_intent(
                         db,
-                        """UPDATE jobs SET payload=CAST(:payload AS jsonb)
-                        WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
-                        job=lease.job_id,
-                        payload=json.dumps(cleared),
-                    ).rowcount:
-                        raise DomainError("STALE_JOB")
-                    self._finish_domain_job(db, lease, "REPAIR", chunk_id)
+                        session,
+                        part,
+                        allocation,
+                        payload,
+                        tried_nodes,
+                        version_id,
+                        lease,
+                        chunk_id,
+                    )
                     return None
                 target = next(
                     (
@@ -1616,112 +1759,43 @@ class Repository:
                     None,
                 )
                 if target is not None:
-                    allocation = (
-                        execute(
-                            db,
-                            "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
-                            aid=allocation["allocation_id"],
-                        )
-                        .mappings()
-                        .one()
+                    _, aid, generation, job, payload = self._reuse_repair_intent(
+                        db, lease, payload, allocation, chunk_id
                     )
-                    job = self._validate_job(db, lease, "REPAIR", chunk_id)
-                    aid = allocation["allocation_id"]
-                    generation = allocation["generation"]
-                    if payload["intent_fence"] != lease.token:
-                        generation += 1
-                        execute(
-                            db,
-                            "UPDATE allocations SET generation=:generation,state='UNKNOWN' "
-                            "WHERE allocation_id=:aid",
-                            aid=aid,
-                            generation=generation,
-                        )
                 else:
-                    if not counts["nodes"]:
-                        raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
-                    replacement = self._charge_repair_target(
+                    target, aid, generation, job, payload = self._replace_repair_destination(
                         db,
-                        targets,
-                        counts,
                         session,
                         part,
+                        allocation,
+                        payload,
+                        tried_nodes,
+                        version_id,
+                        lease,
+                        chunk_id,
+                        targets,
+                        counts,
                         allocations,
-                        exclude=exclude_nodes,
-                        tried_nodes=tried_nodes,
-                    )
-                    allocation = (
-                        execute(
-                            db,
-                            "SELECT * FROM allocations WHERE allocation_id=:aid FOR UPDATE",
-                            aid=allocation["allocation_id"],
-                        )
-                        .mappings()
-                        .one()
-                    )
-                    self._abandon_allocation_in_tx(
-                        db, session, part, allocation, tried_nodes, version_id
-                    )
-                    payload = self._cleared_repair_payload(payload, tried_nodes)
-                    job = self._validate_job(db, lease, "REPAIR", chunk_id)
-                    target = replacement
-                    aid, generation = self._create_repair_allocation(
-                        db, chunk_id, dict(target, recovery_epoch=self.epoch), part
+                        exclude_nodes,
                     )
             else:
-                if self._meets_replica_policy(counts, session):
-                    self._finish_domain_job(db, lease, "REPAIR", chunk_id)
-                    return None
-                if not counts["nodes"]:
-                    raise DomainError("REPAIR_SOURCE_UNAVAILABLE")
-                target = self._charge_repair_target(
+                created = self._new_repair_destination(
                     db,
-                    targets,
-                    counts,
                     session,
                     part,
+                    lease,
+                    chunk_id,
+                    targets,
+                    counts,
                     allocations,
-                    exclude=exclude_nodes,
-                    tried_nodes=tried_nodes,
+                    exclude_nodes,
+                    tried_nodes,
                 )
-                job = self._validate_job(db, lease, "REPAIR", chunk_id)
-                aid, generation = self._create_repair_allocation(
-                    db, chunk_id, dict(target, recovery_epoch=self.epoch), part
-                )
-            if payload.get("intent_fence") != lease.token:
-                execute(
-                    db,
-                    """INSERT INTO write_attempts (attempt_id,allocation_id,generation,
-                    owner_token,state,lease_expires_at)
-                    VALUES (:attempt,:aid,:generation,:job,'INTENDED',:expires)""",
-                    attempt=uuid4(),
-                    aid=aid,
-                    generation=generation,
-                    job=lease.job_id,
-                    expires=job["lease_expires_at"],
-                )
-                new_payload = dict(payload, allocation_id=str(aid), intent_fence=lease.token)
-                if tried_nodes:
-                    new_payload["tried_nodes"] = tried_nodes
-                changed = execute(
-                    db,
-                    """UPDATE jobs SET payload=CAST(:payload AS jsonb)
-                    WHERE job_id=:job AND lease_expires_at>clock_timestamp()""",
-                    job=lease.job_id,
-                    payload=json.dumps(new_payload),
-                ).rowcount
-                if not changed:
-                    raise DomainError("STALE_JOB")
-            return dict(
-                target,
-                allocation_id=aid,
-                generation=generation,
-                chunk_id=chunk_id,
-                namespace_id=self.namespace_id,
-                recovery_epoch=self.epoch,
-                size_bytes=part["size_bytes"],
-                checksum_sha256=part["checksum_sha256"],
-            )
+                if created is None:
+                    return None
+                target, aid, generation, job = created
+            self._bind_repair_intent(db, lease, payload, tried_nodes, aid, generation, job)
+            return self._repair_destination_view(target, aid, generation, chunk_id, part)
 
     @staticmethod
     def _repair_candidates(

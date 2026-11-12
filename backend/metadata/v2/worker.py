@@ -43,6 +43,8 @@ AMBIGUOUS_DEST_STATUS = frozenset(
         grpc.StatusCode.INTERNAL,
     }
 )
+# Prepare reset the dest after a broken StoreChunk; try the next source (or fail).
+_RETRY_REPAIR_SOURCE = object()
 
 
 @dataclass(frozen=True)
@@ -421,14 +423,44 @@ class Worker:
                 proof, lease, cleanup_job_id=abandoned["cleanup_job_id"]
             )
             self.hook("repair_cleanup_released")
-        except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
+        except (grpc.RpcError, grpc.FutureCancelledError):
+            # Unreachable dest keeps DELETE_PENDING charge; CLEANUP retries later.
             work.check()
-            if isinstance(exc, DomainError) and exc.code in (
-                "STALE_JOB",
-                "REPAIR_NOT_AVAILABLE",
-            ):
+        except DomainError as exc:
+            work.check()
+            if exc.code in ("STALE_JOB", "REPAIR_NOT_AVAILABLE", "REPAIR_INTENT_CONFLICT"):
                 raise
+            log.warning(
+                "V2 deferred repair destination cleanup: allocation=%s error=%s",
+                dest["allocation_id"],
+                exc.code,
+            )
         yield
+
+    def _reclaim_opened_repair_store(self, part, version_id, dest, lease, work, attempted):
+        """After StoreChunk opened, recover a durable STORED ack or abandon the dest.
+
+        Returns the STORED proof, None when the destination was abandoned and another
+        target remains, or _RETRY_REPAIR_SOURCE when Prepare reset the dest.
+        """
+        try:
+            prepared = self.storage.unary("PrepareAllocation", dest, work)
+            if prepared.state == "STORED":
+                self.hook("repair_copied")
+                return prepared
+        except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as prep_exc:
+            work.check()
+            if self._should_abandon_repair_target(
+                prep_exc, part["chunk_id"], version_id, attempted
+            ):
+                yield from self._abandon_repair_target(
+                    part["chunk_id"], version_id, dest, lease, work
+                )
+                if self.repo.repair_can_continue(part["chunk_id"], version_id, exclude=attempted):
+                    return None
+            raise
+        yield
+        return _RETRY_REPAIR_SOURCE
 
     def _copy_chunk(self, part, version_id, dest, lease, work, attempted):
         sources = self.repo.repair_sources(part["chunk_id"], version_id, lease)
@@ -442,27 +474,13 @@ class Worker:
                 return proof
             except RepairSourceError as exc:
                 work.check()
+                if exc.store_opened:
+                    reclaimed = yield from self._reclaim_opened_repair_store(
+                        part, version_id, dest, lease, work, attempted
+                    )
+                    if reclaimed is not _RETRY_REPAIR_SOURCE:
+                        return reclaimed
                 if idx + 1 < len(sources):
-                    if exc.store_opened:
-                        try:
-                            prepared = self.storage.unary("PrepareAllocation", dest, work)
-                            if prepared.state == "STORED":
-                                self.hook("repair_copied")
-                                return prepared
-                        except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as prep_exc:
-                            work.check()
-                            if self._should_abandon_repair_target(
-                                prep_exc, part["chunk_id"], version_id, attempted
-                            ):
-                                yield from self._abandon_repair_target(
-                                    part["chunk_id"], version_id, dest, lease, work
-                                )
-                                if self.repo.repair_can_continue(
-                                    part["chunk_id"], version_id, exclude=attempted
-                                ):
-                                    return None
-                            raise
-                        yield
                     continue
                 raise DomainError("REPAIR_SOURCE_UNAVAILABLE") from exc
             except (grpc.RpcError, grpc.FutureCancelledError, DomainError) as exc:
