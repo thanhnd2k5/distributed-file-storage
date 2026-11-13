@@ -9,7 +9,13 @@ import v2_storage_pb2 as pb
 import v2_storage_pb2_grpc as rpc
 
 from metadata.v2.health import HealthObservation
-from metadata.v2.repository import AllocationEvidence, DeleteEvidence, DomainError
+from metadata.v2.repository import (
+    AllocationEvidence,
+    DeleteEvidence,
+    DomainError,
+    InventoryItem,
+    InventoryPage,
+)
 
 
 class RepairSourceError(DomainError):
@@ -82,6 +88,34 @@ def evidence(record, d, *, deleted=False):
     return result
 
 
+def inventory_item(record):
+    if record.state not in (pb.PREPARED, pb.WRITING, pb.STORED, pb.DELETED, pb.CORRUPT):
+        raise DomainError("INVALID_STORAGE_INVENTORY")
+    has_chunk = record.HasField("chunk")
+    if not has_chunk and record.state != pb.DELETED:
+        raise DomainError("INVALID_STORAGE_INVENTORY")
+    s = record.key.scope
+    try:
+        return InventoryItem(
+            UUID(s.namespace_id),
+            UUID(s.recovery_epoch),
+            s.node_id,
+            UUID(s.node_incarnation),
+            UUID(record.key.allocation_id),
+            record.generation,
+            pb.AllocationState.Name(record.state),
+            record.cleanup_complete,
+            record.inventory_sequence,
+            UUID(record.chunk.chunk_id) if has_chunk else None,
+            record.chunk.size_bytes if has_chunk else None,
+            record.chunk.checksum_sha256 if has_chunk else None,
+            record.actual_size_bytes if record.HasField("actual_size_bytes") else None,
+            record.actual_checksum_sha256 if record.HasField("actual_checksum_sha256") else None,
+        )
+    except ValueError as exc:
+        raise DomainError("INVALID_STORAGE_INVENTORY") from exc
+
+
 class StorageClient:
     def __init__(self, timeout=5.0):
         if not 0 < timeout <= 120:
@@ -143,17 +177,63 @@ class StorageClient:
                 return HealthObservation(outcome)
             finally:
                 call.cancel()
-        if (
-            response.scope != scope
-            or response.failure_domain != node["failure_domain"]
-            or response.recovery_required
-        ):
+        if response.scope != scope or response.failure_domain != node["failure_domain"]:
             return HealthObservation("scope_mismatch")
         if not response.filesystem_available_bytes <= response.filesystem_capacity_bytes < 2**63:
             return HealthObservation("unreachable")
         return HealthObservation(
-            "reachable", response.filesystem_available_bytes, response.writable
+            "reachable",
+            response.filesystem_available_bytes,
+            response.writable,
+            recovery_required=response.recovery_required,
         )
+
+    def list_allocations(
+        self, node, *, after_sequence=0, upper_sequence=None, limit=100, stopping=None
+    ):
+        if type(limit) is not int or not 0 < limit <= 1000:
+            raise ValueError("Inventory limit must be in (0,1000]")
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("Invalid inventory cursor")
+        request = pb.ListAllocationsRequest(
+            scope=scope_for(node),
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+        if upper_sequence is not None:
+            request.upper_sequence = upper_sequence
+        with self.channel(node) as channel:
+            call = rpc.StorageServiceStub(channel).ListAllocations.future(
+                request, timeout=self.timeout
+            )
+            try:
+                if stopping is None:
+                    response = call.result()
+                else:
+                    while not stopping.is_set():
+                        try:
+                            response = call.result(timeout=0.1)
+                            break
+                        except grpc.FutureTimeoutError:
+                            continue
+                    else:
+                        return None
+            except grpc.RpcError as exc:
+                if exc.code() == grpc.StatusCode.FAILED_PRECONDITION:
+                    raise DomainError("NODE_SCOPE_MISMATCH") from exc
+                raise DomainError("STORAGE_UNAVAILABLE") from exc
+            finally:
+                call.cancel()
+        if len(response.items) > limit:
+            raise DomainError("INVALID_STORAGE_INVENTORY")
+        items = tuple(inventory_item(record) for record in response.items)
+        page = InventoryPage(
+            items=items,
+            upper_sequence=response.upper_sequence,
+            next_after_sequence=response.next_after_sequence,
+            has_more=response.has_more,
+        )
+        return page
 
     def read(self, d, digest, work):
         """Return updated full digest only after validated footer AND successful EOF.

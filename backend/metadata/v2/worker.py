@@ -16,6 +16,7 @@ import grpc
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from metadata.v2.health import HealthObservation
 from metadata.v2.repository import DomainError, JobLease, Repository, positive
 from metadata.v2.storage_client import RepairSourceError, StorageClient
 
@@ -674,18 +675,87 @@ class Worker:
             finally:
                 self.consumer_slot.release()
 
-    def poll_health(self):
+    def rejoin_node(self, ticket, observation=None):
         if self.stopping.is_set():
-            return
-        try:
-            ticket = self.repo.claim_health_poll()
-            if ticket is None or self.stopping.is_set():
-                return
+            return "STOPPED"
+        if observation is None:
             observation = self.storage.health(ticket, self.stopping)
-            if observation is not None and not self.stopping.is_set():
-                self.repo.apply_health_poll(ticket, observation)
+            if observation is None or self.stopping.is_set():
+                return "STOPPED"
+        if observation.outcome != "reachable" or ticket["health_state"] != "DOWN":
+            self.repo.apply_health_poll(ticket, observation)
+            return (
+                "QUARANTINED" if observation.outcome == "scope_mismatch" else ticket["health_state"]
+            )
+        after_sequence = 0
+        upper_sequence = None
+        while not self.stopping.is_set():
+            try:
+                page = self.storage.list_allocations(
+                    ticket,
+                    after_sequence=after_sequence,
+                    upper_sequence=upper_sequence,
+                    limit=self.config.page_size,
+                    stopping=self.stopping,
+                )
+            except DomainError as exc:
+                outcome = (
+                    "scope_mismatch"
+                    if exc.code in ("NODE_SCOPE_MISMATCH", "INVALID_STORAGE_INVENTORY")
+                    else "unreachable"
+                )
+                self.repo.apply_health_poll(ticket, HealthObservation(outcome))
+                self.next_repair_scan = 0.0
+                return "QUARANTINED" if outcome == "scope_mismatch" else "DOWN"
+            if page is None or self.stopping.is_set():
+                return "STOPPED"
+            try:
+                status = self.repo.reconcile_rejoin_page(
+                    ticket,
+                    page,
+                    after_sequence=after_sequence,
+                    upper_sequence=upper_sequence,
+                    available_bytes=observation.available_bytes,
+                    writable=observation.writable,
+                    recovery_required=observation.recovery_required,
+                )
+            except DomainError as exc:
+                if exc.code == "INVALID_STORAGE_INVENTORY":
+                    self.repo.apply_health_poll(ticket, HealthObservation("scope_mismatch"))
+                    self.next_repair_scan = 0.0
+                    return "QUARANTINED"
+                raise
+            if status != "CONTINUE":
+                if status in ("ACTIVE", "QUARANTINED"):
+                    self.next_repair_scan = 0.0
+                return status
+            upper_sequence = page.upper_sequence
+            after_sequence = page.next_after_sequence
+        return "STOPPED"
+
+    def poll_health(self, *, node_id=None):
+        if self.stopping.is_set():
+            return None
+        try:
+            ticket = (
+                self.repo.claim_health_poll()
+                if node_id is None
+                else self.repo.claim_health_poll(node_id=node_id)
+            )
+            if ticket is None or self.stopping.is_set():
+                return None
+            observation = self.storage.health(ticket, self.stopping)
+            if observation is None or self.stopping.is_set():
+                return None
+            if ticket.get("health_state") == "DOWN" and observation.outcome == "reachable":
+                return self.rejoin_node(ticket, observation)
+            self.repo.apply_health_poll(ticket, observation)
+            if observation.outcome != "reachable":
+                self.next_repair_scan = 0.0
+            return observation.outcome
         except (DomainError, SQLAlchemyError) as exc:
             log.warning("V2 node health poll deferred: %s", type(exc).__name__)
+            return None
 
     def close(self):
         self.stopping.set()

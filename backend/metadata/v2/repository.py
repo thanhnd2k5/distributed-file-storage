@@ -113,6 +113,57 @@ class AllocationEvidence:
             checksum(self.actual_hash)
 
 
+@dataclass(frozen=True)
+class InventoryItem:
+    namespace_id: UUID
+    recovery_epoch: UUID
+    node_id: str
+    incarnation: UUID
+    allocation_id: UUID
+    generation: int
+    state: str
+    cleanup_complete: bool
+    inventory_sequence: int
+    chunk_id: UUID | None = None
+    size_bytes: int | None = None
+    checksum_sha256: str | None = None
+    actual_size: int | None = None
+    actual_hash: str | None = None
+
+    def __post_init__(self):
+        for value in (
+            self.namespace_id,
+            self.recovery_epoch,
+            self.incarnation,
+            self.allocation_id,
+        ):
+            if not isinstance(value, UUID):
+                raise ValueError("Inventory IDs must be UUIDs")
+        positive(self.generation)
+        positive(self.inventory_sequence)
+        if self.state not in ("PREPARED", "WRITING", "STORED", "DELETED", "CORRUPT"):
+            raise ValueError("Invalid inventory state")
+        if self.chunk_id is not None:
+            if not isinstance(self.chunk_id, UUID):
+                raise ValueError("Chunk ID must be UUID")
+            positive(self.size_bytes)
+            checksum(self.checksum_sha256)
+        elif self.state != "DELETED":
+            raise ValueError("Non-deleted inventory record requires chunk spec")
+        if self.actual_size is not None:
+            positive(self.actual_size, zero=True)
+        if self.actual_hash is not None:
+            checksum(self.actual_hash)
+
+
+@dataclass(frozen=True)
+class InventoryPage:
+    items: tuple[InventoryItem, ...]
+    upper_sequence: int
+    next_after_sequence: int
+    has_more: bool
+
+
 class Repository:
     def __init__(
         self,
@@ -824,8 +875,8 @@ class Repository:
             FROM picked p WHERE j.job_id=p.job_id""",
         )
 
-    def claim_health_poll(self):
-        """Claim one due node. Lock node before the poll row, including on activation."""
+    def claim_health_poll(self, *, node_id=None):
+        """Claim one due node (or explicit node_id). Lock node before the poll row."""
         with self.transaction() as db:
             node = (
                 execute(
@@ -835,11 +886,17 @@ class Repository:
                     FROM node_health_polls p JOIN storage_nodes n USING (node_id)
                     JOIN node_incarnations i ON i.node_id=n.node_id
                         AND i.incarnation=n.active_incarnation
-                    WHERE p.next_poll_at<=clock_timestamp() AND n.enabled
+                    WHERE (
+                        (CAST(:node_id AS varchar) IS NULL AND p.next_poll_at<=clock_timestamp())
+                        OR (n.node_id=:node_id AND (
+                            p.ticket_expires_at IS NULL OR p.ticket_expires_at<=clock_timestamp()
+                        ))
+                    ) AND n.enabled
                         AND n.health_state!='QUARANTINED'
                         AND i.state='ACTIVE' AND i.recovery_epoch=:epoch
                     ORDER BY p.next_poll_at,n.node_id LIMIT 1 FOR UPDATE OF n SKIP LOCKED""",
                     epoch=self.epoch,
+                    node_id=node_id,
                 )
                 .mappings()
                 .one_or_none()
@@ -852,14 +909,27 @@ class Repository:
                 """UPDATE node_health_polls
                 SET ticket_expires_at=statement_timestamp()+interval '5 seconds',
                     next_poll_at=statement_timestamp()+interval '5 seconds'
-                WHERE node_id=:node AND next_poll_at<=clock_timestamp()""",
+                WHERE node_id=:node AND (
+                    (CAST(:node_id AS varchar) IS NULL AND next_poll_at<=clock_timestamp())
+                    OR (CAST(:node_id AS varchar) IS NOT NULL AND (
+                        ticket_expires_at IS NULL OR ticket_expires_at<=clock_timestamp()
+                    ))
+                )""",
                 node=node["node_id"],
+                node_id=node_id,
             ).rowcount:
                 return None
             generation = execute(
                 db,
-                """UPDATE storage_nodes SET health_generation=health_generation+1
-                WHERE node_id=:node RETURNING health_generation""",
+                """UPDATE storage_nodes n
+                SET health_generation=GREATEST(
+                    n.health_generation+1,
+                    COALESCE((
+                        SELECT MAX(observation_generation) FROM allocations
+                        WHERE node_id=n.node_id AND incarnation=n.active_incarnation
+                    ), 0) + 1
+                )
+                WHERE n.node_id=:node RETURNING health_generation""",
                 node=node["node_id"],
             ).scalar_one()
             return dict(
@@ -919,6 +989,321 @@ class Repository:
             if state == "ACTIVE" and ticket["health_state"] != "ACTIVE":
                 self._requeue_dead_repairs(db)
             return True
+
+    @staticmethod
+    def _validate_inventory_page(page: InventoryPage, after_sequence: int, upper_sequence):
+        positive(after_sequence, zero=True)
+        positive(page.upper_sequence, zero=True)
+        positive(page.next_after_sequence, zero=True)
+        if upper_sequence is not None and page.upper_sequence != upper_sequence:
+            raise DomainError("INVALID_STORAGE_INVENTORY")
+        prev = after_sequence
+        for item in page.items:
+            if item.inventory_sequence <= prev or item.inventory_sequence > page.upper_sequence:
+                raise DomainError("INVALID_STORAGE_INVENTORY")
+            prev = item.inventory_sequence
+        if page.items:
+            if page.next_after_sequence != prev:
+                raise DomainError("INVALID_STORAGE_INVENTORY")
+        elif page.has_more or page.next_after_sequence != after_sequence:
+            raise DomainError("INVALID_STORAGE_INVENTORY")
+        if page.has_more and page.next_after_sequence >= page.upper_sequence:
+            raise DomainError("INVALID_STORAGE_INVENTORY")
+
+    def _reconcile_rejoin_item(self, db, ticket, item: InventoryItem):
+        if (item.namespace_id, item.node_id, item.incarnation) != (
+            self.namespace_id,
+            ticket["node_id"],
+            ticket["incarnation"],
+        ):
+            return False
+        if item.recovery_epoch != self.epoch:
+            return item.state == "DELETED" and item.cleanup_complete
+        row = (
+            execute(
+                db,
+                """SELECT a.*, p.size_bytes AS part_size, p.checksum_sha256 AS part_hash
+                FROM allocations a
+                JOIN upload_parts p USING (chunk_id)
+                WHERE a.allocation_id=:aid
+                FOR UPDATE OF a""",
+                aid=item.allocation_id,
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return item.state == "DELETED" and item.cleanup_complete
+        if (row["node_id"], row["incarnation"], row["recovery_epoch"]) != (
+            ticket["node_id"],
+            ticket["incarnation"],
+            self.epoch,
+        ):
+            return False
+        if item.generation > row["generation"]:
+            return False
+        if item.chunk_id is not None and (
+            item.chunk_id,
+            item.size_bytes,
+            item.checksum_sha256,
+        ) != (row["chunk_id"], row["part_size"], row["part_hash"]):
+            return False
+        actual_corrupt = item.state == "STORED" and (item.actual_size, item.actual_hash) != (
+            row["part_size"],
+            row["part_hash"],
+        )
+        if row["state"] == "RELEASED":
+            if not (item.state == "DELETED" and item.cleanup_complete):
+                return False
+            execute(
+                db,
+                """UPDATE allocations
+                SET observation_generation=:gen,observed_at=clock_timestamp()
+                WHERE allocation_id=:aid""",
+                gen=ticket["generation"],
+                aid=item.allocation_id,
+            )
+            return True
+        if row["state"] == "STORED":
+            if actual_corrupt or item.state == "CORRUPT":
+                health = "CORRUPT"
+            elif item.generation == row["generation"] and item.state == "STORED":
+                health = "CORRUPT" if row["replica_health"] == "CORRUPT" else "VERIFIED"
+            else:
+                health = "MISSING"
+            execute(
+                db,
+                """UPDATE allocations
+                SET replica_health=:health,observation_generation=:gen,
+                    observed_at=clock_timestamp()
+                WHERE allocation_id=:aid""",
+                health=health,
+                gen=ticket["generation"],
+                aid=item.allocation_id,
+            )
+            return True
+        # RESERVED, WRITING, UNKNOWN, DELETE_PENDING: never promote UNKNOWN to STORED,
+        # and never release charged_bytes during rejoin (even if DELETED is mid-cleanup).
+        health = "CORRUPT" if actual_corrupt or item.state == "CORRUPT" else row["replica_health"]
+        execute(
+            db,
+            """UPDATE allocations
+            SET replica_health=:health,observation_generation=:gen,
+                observed_at=clock_timestamp()
+            WHERE allocation_id=:aid""",
+            health=health,
+            gen=ticket["generation"],
+            aid=item.allocation_id,
+        )
+        return True
+
+    def _quarantine_rejoin_node(self, db, ticket, writable, repair_targets: set):
+        for row in execute(
+            db,
+            """SELECT DISTINCT s.file_id,f.version_id,a.chunk_id
+            FROM allocations a
+            JOIN upload_parts p USING (chunk_id)
+            JOIN upload_sessions s USING (upload_id)
+            JOIN files f ON f.file_id=s.file_id
+            WHERE a.node_id=:node AND a.incarnation=:inc AND a.recovery_epoch=:epoch
+              AND a.state='STORED' AND f.state='AVAILABLE'
+            ORDER BY a.chunk_id
+            LIMIT 100""",
+            node=ticket["node_id"],
+            inc=ticket["incarnation"],
+            epoch=self.epoch,
+        ).mappings():
+            repair_targets.add((row["file_id"], row["version_id"], row["chunk_id"]))
+        execute(
+            db,
+            """UPDATE node_health_polls SET ticket_expires_at=NULL,
+                next_poll_at=clock_timestamp()+interval '10 seconds',
+                consecutive_failures=0,consecutive_successes=0,
+                writable=COALESCE(:writable,writable) WHERE node_id=:node""",
+            writable=writable,
+            node=ticket["node_id"],
+        )
+        execute(
+            db,
+            """UPDATE storage_nodes
+            SET health_state='QUARANTINED',health_observed_at=clock_timestamp(),
+                available_bytes=NULL WHERE node_id=:node""",
+            node=ticket["node_id"],
+        )
+
+    def _finish_rejoin_sweep(
+        self, db, ticket, available_bytes, writable, repair_targets: set, *, recovery_required=False
+    ):
+        for row in execute(
+            db,
+            """SELECT DISTINCT s.file_id,f.version_id,a.chunk_id
+            FROM allocations a
+            JOIN upload_parts p USING (chunk_id)
+            JOIN upload_sessions s USING (upload_id)
+            JOIN files f ON f.file_id=s.file_id
+            WHERE a.node_id=:node AND a.incarnation=:inc AND a.recovery_epoch=:epoch
+              AND a.state='STORED'
+              AND (a.observation_generation<:gen OR a.replica_health IN ('MISSING','CORRUPT'))
+              AND f.state='AVAILABLE'
+            ORDER BY a.chunk_id
+            LIMIT 100""",
+            node=ticket["node_id"],
+            inc=ticket["incarnation"],
+            epoch=self.epoch,
+            gen=ticket["generation"],
+        ).mappings():
+            repair_targets.add((row["file_id"], row["version_id"], row["chunk_id"]))
+        execute(
+            db,
+            """WITH missing AS (
+                SELECT allocation_id FROM allocations
+                WHERE node_id=:node AND incarnation=:inc AND recovery_epoch=:epoch
+                  AND state='STORED' AND observation_generation<:gen
+                ORDER BY allocation_id FOR UPDATE
+            )
+            UPDATE allocations a
+            SET replica_health='MISSING',observation_generation=:gen,
+                observed_at=clock_timestamp()
+            FROM missing m WHERE a.allocation_id=m.allocation_id""",
+            node=ticket["node_id"],
+            inc=ticket["incarnation"],
+            epoch=self.epoch,
+            gen=ticket["generation"],
+        )
+        execute(
+            db,
+            """WITH unseen AS (
+                SELECT allocation_id FROM allocations
+                WHERE node_id=:node AND incarnation=:inc AND recovery_epoch=:epoch
+                  AND state!='STORED' AND observation_generation<:gen
+                ORDER BY allocation_id FOR UPDATE
+            )
+            UPDATE allocations a
+            SET observation_generation=:gen,observed_at=clock_timestamp()
+            FROM unseen u WHERE a.allocation_id=u.allocation_id""",
+            node=ticket["node_id"],
+            inc=ticket["incarnation"],
+            epoch=self.epoch,
+            gen=ticket["generation"],
+        )
+        if recovery_required:
+            self._quarantine_rejoin_node(db, ticket, writable, repair_targets)
+            if available_bytes is not None:
+                execute(
+                    db,
+                    """UPDATE storage_nodes
+                    SET available_bytes=:available WHERE node_id=:node""",
+                    available=available_bytes,
+                    node=ticket["node_id"],
+                )
+            return "QUARANTINED"
+        execute(
+            db,
+            """UPDATE node_health_polls SET ticket_expires_at=NULL,
+                next_poll_at=clock_timestamp()+interval '10 seconds',
+                consecutive_failures=0,consecutive_successes=0,
+                writable=COALESCE(:writable,writable) WHERE node_id=:node""",
+            writable=writable,
+            node=ticket["node_id"],
+        )
+        execute(
+            db,
+            """UPDATE storage_nodes
+            SET health_state='ACTIVE',health_observed_at=clock_timestamp(),
+                available_bytes=COALESCE(:available,available_bytes) WHERE node_id=:node""",
+            available=available_bytes,
+            node=ticket["node_id"],
+        )
+        self._requeue_dead_repairs(db)
+        return "ACTIVE"
+
+    def reconcile_rejoin_page(
+        self,
+        ticket,
+        page: InventoryPage,
+        *,
+        after_sequence=0,
+        upper_sequence=None,
+        available_bytes=None,
+        writable=None,
+        recovery_required=False,
+    ):
+        """Reconcile one bounded inventory page for a DOWN node under ticket fencing."""
+        self._validate_inventory_page(page, after_sequence, upper_sequence)
+        if (
+            ticket["namespace_id"],
+            ticket["recovery_epoch"],
+            ticket["health_state"],
+        ) != (self.namespace_id, self.epoch, "DOWN"):
+            return "STALE"
+        repair_targets = set()
+        outcome = "STALE"
+        with self.transaction() as db:
+            node = execute(
+                db,
+                """SELECT n.node_id FROM storage_nodes n
+                JOIN node_incarnations i ON i.node_id=n.node_id
+                    AND i.incarnation=n.active_incarnation
+                WHERE n.node_id=:node_id AND n.enabled AND n.health_state='DOWN'
+                    AND n.host=:host AND n.port=:port AND n.failure_domain=:failure_domain
+                    AND n.active_incarnation=:incarnation AND n.health_generation=:generation
+                    AND i.state='ACTIVE' AND i.recovery_epoch=:recovery_epoch
+                FOR UPDATE OF n""",
+                **ticket,
+            ).one_or_none()
+            if node is None:
+                return "STALE"
+            poll = execute(
+                db,
+                """SELECT node_id FROM node_health_polls
+                WHERE node_id=:node AND ticket_expires_at>clock_timestamp()
+                FOR UPDATE""",
+                node=ticket["node_id"],
+            ).one_or_none()
+            if poll is None:
+                return "STALE"
+            for item in page.items:
+                if not self._reconcile_rejoin_item(db, ticket, item):
+                    self._quarantine_rejoin_node(db, ticket, writable, repair_targets)
+                    outcome = "QUARANTINED"
+                    break
+            else:
+                if page.has_more:
+                    execute(
+                        db,
+                        """UPDATE node_health_polls
+                        SET ticket_expires_at=statement_timestamp()+interval '5 seconds',
+                            next_poll_at=statement_timestamp()+interval '5 seconds',
+                            writable=COALESCE(:writable,writable)
+                        WHERE node_id=:node""",
+                        writable=writable,
+                        node=ticket["node_id"],
+                    )
+                    if available_bytes is not None:
+                        execute(
+                            db,
+                            """UPDATE storage_nodes
+                            SET available_bytes=:available,health_observed_at=clock_timestamp()
+                            WHERE node_id=:node""",
+                            available=available_bytes,
+                            node=ticket["node_id"],
+                        )
+                    outcome = "CONTINUE"
+                else:
+                    outcome = self._finish_rejoin_sweep(
+                        db,
+                        ticket,
+                        available_bytes,
+                        writable,
+                        repair_targets,
+                        recovery_required=recovery_required,
+                    )
+        if outcome in ("ACTIVE", "QUARANTINED"):
+            for file_id, version_id, chunk_id in sorted(
+                repair_targets, key=lambda item: str(item[2])
+            ):
+                self.enqueue_repair(file_id, version_id, chunk_id)
+        return outcome
 
     def set_budget(self, node_id, incarnation, budget):
         positive(budget, zero=True)
@@ -1930,11 +2315,20 @@ class Repository:
         for allocation in allocations:
             proof = by_id[allocation["allocation_id"]]
             is_stored = proof.state == "STORED"
+            # Never lower observation_generation below the node's health fence: a
+            # concurrent rejoin sweep treats observation_generation < ticket.generation
+            # as MISSING, and allocation.generation is often much smaller.
             execute(
                 db,
                 """UPDATE allocations SET state=:state,replica_health=:health,
                 ack_size=:size,ack_hash=:hash,acked_at=CASE WHEN :stored THEN clock_timestamp()
-                ELSE NULL END,observation_generation=generation,observed_at=clock_timestamp()
+                ELSE NULL END,
+                observation_generation=GREATEST(
+                    generation,
+                    (SELECT health_generation FROM storage_nodes
+                     WHERE node_id=allocations.node_id)
+                ),
+                observed_at=clock_timestamp()
                 WHERE allocation_id=:aid""",
                 state="STORED" if is_stored else "RESERVED",
                 health="VERIFIED" if is_stored else "UNKNOWN",

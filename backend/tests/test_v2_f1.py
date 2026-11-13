@@ -27,6 +27,12 @@ def test_down_requires_rejoin_even_after_repeated_healthy_observations():
         state = next_health(*state, HealthObservation("reachable"))
     assert state == ("DOWN", 0, 0)
     assert next_health(*state, HealthObservation("scope_mismatch")) == ("QUARANTINED", 0, 0)
+    assert next_health(
+        "ACTIVE",
+        0,
+        0,
+        HealthObservation("reachable", available_bytes=1, writable=True, recovery_required=True),
+    ) == ("QUARANTINED", 0, 0)
 
 
 def test_slow_health_poll_allows_job_ticks_and_drains_on_shutdown():

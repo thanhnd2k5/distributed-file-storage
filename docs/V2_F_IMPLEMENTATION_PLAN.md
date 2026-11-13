@@ -211,38 +211,66 @@ Trong `Worker.repair`:
    hạn `jobs_per_kind <= 24 // len(KINDS)` (`6`), giữ nguyên ràng buộc loại trừ
    tối đa 24 job đang giữ của E3.
 
+## F3 — node rejoin và đối soát inventory
+
+1. **Tận dụng schema sẵn có, không thêm bảng mới:**
+   - Dùng trực tiếp `storage_nodes.health_generation`, `node_health_polls.ticket_expires_at`
+     và `allocations.observation_generation` / `allocations.observed_at` /
+     `allocations.replica_health` để vừa fence late inventory vừa sweep
+     allocation mất (`observation_generation < ticket.generation`) bằng SQL ở
+     trang cuối mà không giữ tập UUID trong RAM.
+2. **Storage `HealthCheck` & `StorageClient.list_allocations`:**
+   - [service.py](file:///d:/distributed-file-storage/backend/storage/v2/service.py)
+     kiểm tra thư mục `quarantine/` để báo `recovery_required=True` khi
+     `Ledger.recover()` đã cô lập file vô chủ trên đĩa.
+   - [storage_client.py](file:///d:/distributed-file-storage/backend/metadata/v2/storage_client.py)
+     cung cấp `list_allocations` gọi `ListAllocations` có phân trang theo
+     `upper_sequence`, hỗ trợ tombstone `DELETED` không có `ChunkSpec`.
+3. **Reconciliation & Fencing trong `Repository` / `Worker`:**
+   - `claim_health_poll(node_id=...)` cấp vé với `health_generation` lớn hơn
+     mọi `observation_generation` hiện có trên `(node_id, incarnation)`.
+   - `reconcile_rejoin_page` đối soát từng trang: không tự nâng `UNKNOWN` thành
+     `STORED`; giữ `STORED` khớp spec/generation; chuyển bản sao mất/hỏng sang
+     `replica_health = 'MISSING' | 'CORRUPT'` (giữ nguyên `charged_bytes`) và
+     gọi `enqueue_repair`; phát hiện allocation lạ, `epoch` cũ chưa adopt, hoặc
+     allocation `RELEASED` nhưng Storage còn `STORED` sẽ chuyển node sang
+     `QUARANTINED` (không tự xóa bytes trên đĩa hay công bố vào manifest). Trang
+     cuối sweep các allocation `STORED` không có trong inventory sang `MISSING`,
+     chuyển node `DOWN → ACTIVE` và gọi `_requeue_dead_repairs`.
+   - `Worker.poll_health(node_id=...)` tự động gọi `Worker.rejoin_node` khi node
+     `DOWN` phản hồi `reachable`, đồng thời hỗ trợ gọi trực tiếp theo `node_id`.
+
 ## Evidence hiện tại
 
 Targeted Windows/Python 3.12 (`.venv`):
 
 - `pytest -q tests/test_v2_f1.py tests/test_v2_e3.py` đạt **25 passed (0.12s)**
-  cho policy health F1 và logic thuần `WorkerConfig`/`ReadBudget`/`Work`/`Worker.close`.
-- `ruff check` và `ruff format --check` đạt trên cả 6 file Python thay đổi
-  (`repository.py`, `storage_client.py`, `worker.py`, `test_v2_e3.py`,
-  `test_v2_e3_integration.py`, `test_v2_f2_integration.py`).
+  trên F1/E3 thuần (`test_v2_f1.py` đạt **3 passed (0.10s)** sau chỉnh sửa F3).
+- `ruff check` và `ruff format --check` đạt trên toàn bộ file Python thay đổi
+  (`repository.py`, `storage_client.py`, `worker.py`, `storage/v2/service.py`,
+  `test_v2_f2_integration.py`, `test_v2_f3_integration.py`).
 
 Focused integration trên Docker Linux/Python 3.12/PostgreSQL 16 + StorageService
-gRPC/SQLite thật (container `dfs-v2-tests-postgres-1` trạng thái healthy, truy
-vấn kiểm tra `dfs_v2_test|v2_test|1`, image `dfs-python-tests:dev` build lại từ
-source hiện tại):
+gRPC/SQLite thật (container `dfs-v2-tests-postgres-1` healthy, image
+`dfs-python-tests:dev` build lại từ source hiện tại):
 
-- **Gate F2 (discovery, intent, execution, recovery, cleanup, crash/cancel) & C1:**
+- **Gate F3 + F1 + Ledger + Metadata schema (`16` bảng):**
   ```powershell
-  docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f2_integration.py tests/test_v2_f2_discovery.py tests/test_v2_f2_intent.py tests/test_v2_c1.py::test_confirm_and_complete_enforce_current_replica_policy
+  docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f3_integration.py tests/test_v2_f1_integration.py tests/test_v2_ledger.py tests/test_v2_metadata.py
   ```
-  Đạt **23 passed (17.08s)**, bao phủ health→`DOWN` discovery có phân trang và đọc
-  lại byte-for-byte/SHA-256 chỉ từ replica mới, mất ACK + reclaim generation không
-  copy lại, `ENOSPC`/unreachable cleanup (`DELETE_PENDING` → `RELEASED`) và xoay
-  đích, truncate stream nhiều block (`262144 + 777` B) trước `footer` + `ReadBudget`
-  + nguồn lỗi cạn retry về `DEAD` / tự wake khi activate node mới, tombstone
-  trong lúc repair, `SIGKILL` ở 6 ranh giới crash, và graceful cancel khi tắt `Worker`.
-- **Gate hồi quy E3 4-kind fairness, F1 health & C2 lifecycle/SIGTERM:**
+  Đạt **73 passed (13.25s)**, bao phủ restart cùng volume (phân trang `page_size=1`,
+  wake `DEAD` repair), mất/hỏng chunk giữ nguyên `charged_bytes` và tự repair RF,
+  cô lập orphan / `old_epoch` / `resurrected_released` / file vô chủ trong
+  `quarantine/` về `QUARANTINED`, volume/incarnation mới bị cách ly tới khi admin
+  `provision_node` + `activate_node`, tombstone `DELETED` không có `ChunkSpec` +
+  giữ charge tới khi `CLEANUP` ACK, và fencing late inventory page.
+- **Gate F2 (discovery, intent, execution, recovery, cleanup, crash/cancel) & E3/C2:**
   ```powershell
-  docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_e3_integration.py tests/test_v2_f1_integration.py tests/test_v2_c2.py::test_bounded_loop_cleanup_progress_and_shutdown tests/test_v2_c2.py::test_worker_entrypoint_sigterm_cancels_real_grpc_and_can_restart tests/test_v2_c2.py::test_exhausted_job_rechecks_lease_after_failure_domain_effects
+  docker compose -f deploy/compose.v2-metadata-tests.yml run --rm --no-deps tests python -m pytest -q -x tests/test_v2_f2_integration.py tests/test_v2_f2_discovery.py tests/test_v2_f2_intent.py tests/test_v2_e3_integration.py tests/test_v2_c2.py::test_bounded_loop_cleanup_progress_and_shutdown tests/test_v2_c2.py::test_worker_entrypoint_sigterm_cancels_real_grpc_and_can_restart
   ```
-  Đạt **21 passed (16.60s)**.
+  Đạt **34 passed (43.30s)** (đã cập nhật 2 test crash/cancel của F2 gọi `n0.stop()`
+  để mô phỏng đúng node `DOWN` khi rejoin tự động bật).
 
-F1 và F2 hoàn tất baseline. Giới hạn đã kiểm: fixture dùng nhiều process cùng host
-trên Docker Linux, chưa chứng minh failover nhiều host vật lý; chưa chạy full
-backend suite, cluster smoke, F3 rejoin/inventory reconciliation, F4 scrub, F5 hay
-frontend/C5 checks.
+F1, F2 và F3 hoàn tất baseline. Giới hạn đã kiểm: fixture dùng nhiều process cùng
+host trên Docker Linux, chưa chứng minh failover nhiều host vật lý; chưa chạy
+full backend suite, cluster smoke, F4 scrub, F5 hay frontend/C5 checks.

@@ -9,12 +9,18 @@ class HealthObservation:
     outcome: Literal["reachable", "unreachable", "scope_mismatch"]
     available_bytes: int | None = None
     writable: bool | None = None
+    recovery_required: bool = False
 
 
 def next_health(state, failures, successes, observation):
     if observation.outcome == "scope_mismatch":
         return "QUARANTINED", 0, 0
     if observation.outcome == "reachable":
+        # Unowned bytes under quarantine/ keep the node out of placement until an
+        # administrator clears them. DOWN rejoin applies inventory first, then
+        # quarantines via reconcile_rejoin_page when recovery_required stays set.
+        if observation.recovery_required:
+            return "QUARANTINED", 0, 0
         if state == "SUSPECTED":
             successes += 1
             if successes < 2:

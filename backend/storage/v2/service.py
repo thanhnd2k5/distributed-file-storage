@@ -242,11 +242,13 @@ class StorageService(rpc.StorageServiceServicer):
             committed = self.ledger._db.execute(
                 "SELECT COALESCE(SUM(actual_size),0) FROM allocations WHERE state='STORED'"
             ).fetchone()[0]
+        quarantine_dir = self.ledger.root / "quarantine"
+        has_quarantined = quarantine_dir.exists() and any(quarantine_dir.iterdir())
         return pb.HealthCheckResponse(
             scope=request.scope,
             failure_domain=self.failure_domain,
             writable=self.ledger.writable(self.ledger.chunk_limit),
-            recovery_required=False,
+            recovery_required=has_quarantined,
             filesystem_capacity_bytes=usage.total,
             filesystem_available_bytes=usage.free,
             committed_bytes=committed,

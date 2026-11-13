@@ -790,11 +790,12 @@ def test_delete_tombstone_during_repair_releases_all_allocations(f2_cluster, whe
 )
 def test_process_crash_and_graceful_cancel_boundaries(f2_cluster, point):
     repo, cluster = f2_cluster
-    cluster.add_node("node-0", domain="domain-0", budget=500, chunk_limit=3)
+    n0 = cluster.add_node("node-0", domain="domain-0", budget=500, chunk_limit=3)
     cluster.add_node("node-1", domain="domain-1", budget=500, chunk_limit=3)
     session = make_available(repo, b"abc")
     n2 = cluster.add_node("node-2", domain="domain-2", budget=500, chunk_limit=3)
     n3 = cluster.add_node("node-3", domain="domain-3", budget=500, chunk_limit=3)
+    n0.stop()
     sql(repo, "UPDATE storage_nodes SET health_state='DOWN' WHERE node_id='node-0'")
     (deficit,) = repo.repair_scan_page()["deficits"]
     repo.enqueue_repair(deficit["file_id"], deficit["version_id"], deficit["chunk_id"])
@@ -877,10 +878,11 @@ def test_process_crash_and_graceful_cancel_boundaries(f2_cluster, point):
 
 def test_graceful_worker_close_cancels_copy_and_recovers(f2_cluster):
     repo, cluster = f2_cluster
-    cluster.add_node("node-0", domain="domain-0", budget=500, chunk_limit=3)
+    n0 = cluster.add_node("node-0", domain="domain-0", budget=500, chunk_limit=3)
     n1 = cluster.add_node("node-1", domain="domain-1", budget=500, chunk_limit=3)
     session = make_available(repo, b"abc")
     n2 = cluster.add_node("node-2", domain="domain-2", budget=500, chunk_limit=3)
+    n0.stop()
     sql(repo, "UPDATE storage_nodes SET health_state='DOWN' WHERE node_id='node-0'")
     (deficit,) = repo.repair_scan_page()["deficits"]
     repo.enqueue_repair(deficit["file_id"], deficit["version_id"], deficit["chunk_id"])
